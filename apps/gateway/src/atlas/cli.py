@@ -7,14 +7,15 @@ from pathlib import Path
 
 import typer
 import uvicorn
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
 from atlas.audit.ledger import AuditLedger
 from atlas.engine.evaluator import PolicyEvaluator
 from atlas.models import AgentIdentity, DecisionOutcome, SessionState, UserIdentity
 from atlas.proxy.mcp import MCPProxyInterceptor
 from atlas.redteam.fuzzer import RedTeamFuzzer
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
 
 app = typer.Typer(help="Atlas: AI Agent Security Control Plane & Runtime Policy Enforcement Gateway")
 console = Console()
