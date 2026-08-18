@@ -47,14 +47,16 @@ flowchart TB
     subgraph Atlas[" Atlas Control Plane (Inline Gateway) "]
         direction TB
         
-        subgraph Ingress[" 1. Ingress Filter "]
+        subgraph Ingress[" 1. Ingress & De-obfuscation Filter "]
             PI[Prompt Injection & Jailbreak Detector]
+            Deob[Recursive De-obfuscator - URL / Base64 / Hex]
             Canary[Synthetic Canary Trap Engine]
         end
         
         subgraph PEP[" 2. Policy Enforcement Point (PEP) "]
             OPA[OPA / Rego Policy Engine]
-            AST[AST Parsers - SQLGlot & Bashlex]
+            SQLAST[SQL AST Inspector & Auto-Rewriter - SQLGlot]
+            ShellAST[Shell AST Inspector - Bashlex]
             AuthZen[Delegated Scope Bounding]
             StepUp[Human-in-the-Loop Gate]
             LoopGuard[Circuit Breaker / Budget Limiter]
@@ -65,9 +67,10 @@ flowchart TB
             SecretScrub[Secret & Credential Redactor]
         end
         
-        subgraph Audit[" 4. Cryptographic Audit Ledger "]
+        subgraph Audit[" 4. Cryptographic Audit Ledger & Dashboard "]
             HashChain[SHA-256 Hash-Chained Receipts]
             Taxonomy[ATLAS / OWASP / NIST Telemetry Mapper]
+            UI[Real-Time Visual Observability Dashboard]
         end
     end
     
@@ -75,7 +78,7 @@ flowchart TB
     Ingress --> LLM[(Foundation Model\nOpenAI / Anthropic / Local)]
     
     LLM -->|2. Tool Proposal| PEP
-    PEP -->|Authorized Call| Tools[(Databases / APIs / Shell / MCP Servers)]
+    PEP -->|Authorized & Rewritten Call| Tools[(Databases / APIs / Shell / MCP Servers)]
     PEP -.->|Denied / Step-Up Required| Orchestrator
     
     Tools -->|3. Raw Tool Return / RAG| Scrubber
@@ -92,20 +95,25 @@ flowchart TB
 ### 1. Action Authorization & Least Agency (OPA/Rego + AST Parsers)
 Evaluates every tool invocation proposal before execution:
 $$\text{Decision} = f(\text{User Identity}, \text{Agent Role}, \text{Requested Tool}, \text{Parsed AST Arguments}, \text{Session Depth})$$
-- **SQL AST Inspection (`sqlglot`)**: Blocks destructive verbs (`DROP`, `DELETE`, `TRUNCATE`) and restricted table queries (`credentials`, `salary_records`).
+- **SQL AST Inspection & Autonomous Rewriting (`sqlglot`)**: Blocks destructive verbs (`DROP`, `DELETE`, `TRUNCATE`), restricts sensitive tables (`credentials`, `salary_records`), and autonomously injects safety limits (`LIMIT 100`) and tenant isolation clauses (`WHERE tenant_id = '...'`).
+- **Shell AST Inspector (`bashlex`)**: Intercepts dangerous binary invocations (`rm -rf /`, `chmod 777`), subshell expansions (`$(...)`), reverse shells (`/dev/tcp/`, `nc -e`), and pipe-to-interpreter attacks (`curl ... | sh`).
+- **Recursive De-obfuscation Engine**: Unpacks nested Base64, URL-encoded (`%2e%2e%2f`), hex-escaped, and Unicode homoglyphs before evaluation.
 - **Filesystem Containment**: Blocks directory traversal (`../`) and sensitive file patterns (`.env`, `id_rsa`).
 - **Network Egress Guard**: Blocks SSRF targeting Cloud Instance Metadata (`169.254.169.254`) and unauthorized webhook destinations.
 - **Budget Circuit Breakers**: Halts runaway agent loops when step depth or token spend caps are exceeded.
 
-### 2. Inter-Tool Context Poisoning Defense (AML.T0054 / ASI06)
+### 2. Native Model Context Protocol (MCP) Security Gateway
+Acts as an inline JSON-RPC proxy for Anthropic's Model Context Protocol (MCP), validating `tools/call` requests against zero-trust policies and sanitizing `tools/call` response payloads.
+
+### 3. Inter-Tool Context Poisoning Defense (AML.T0054 / ASI06)
 Real agent exploits occur when external data sources (Jira, RAG documents, web pages) contain embedded instructions. Atlas intercepts all tool returns *before* they enter the LLM context, quarantining indirect prompt injections and neutralizing exfiltration commands.
 
-### 3. Tamper-Evident Cryptographic Audit Ledger
+### 4. Tamper-Evident Cryptographic Audit Ledger
 Every single policy decision and tool invocation is recorded into an append-only, SHA-256 hash-chained JSONL ledger:
 $$\text{Hash}_N = \text{SHA256}(\text{Hash}_{N-1} \parallel \text{CanonicalJSON}(\text{Receipt}_N))$$
 Any modification or deletion breaks the hash chain and is immediately flagged by `atlas verify-audit`.
 
-### 4. Direct Threat Taxonomy Mapping
+### 5. Direct Threat Taxonomy Mapping
 Every violation automatically attaches machine-readable framework metadata:
 - **MITRE ATLAS**: `AML.T0051`, `AML.T0054`, `AML.T0086`, `AML.T0057`, `AML.T0053`
 - **OWASP Agentic Top 10 (2026)**: `ASI01` through `ASI10`
@@ -119,12 +127,13 @@ Every violation automatically attaches machine-readable framework metadata:
 ```bash
 git clone https://github.com/Samuelabhinav37/Atlas.git
 cd Atlas
-pip install -e .
+pip install -e ".[dev]"
 ```
 
-### 2. Start the Control Plane Gateway
+### 2. Start the Control Plane Gateway & Visual Dashboard
 ```bash
 python -m atlas.cli serve --host 127.0.0.1 --port 8000
+# Open your browser: http://localhost:8000/dashboard
 ```
 
 ### 3. Run the Adversarial Threat Benchmark Suite
@@ -144,10 +153,21 @@ python -m atlas.cli benchmark
 └──────────────────────────────────────────────────┴────────────┴─────────────────┴────────────┴────────────────────────────┘
 ```
 
-### 4. Verify Cryptographic Audit Ledger Integrity
+### 4. Evaluate an MCP Tool Call via CLI
 ```bash
-python -m atlas.cli verify-audit --log-file atlas_audit.jsonl
-# Output: ✓ SUCCESS: Ledger verified successfully (5 valid receipts, 0 tampered)
+python -m atlas.cli mcp-eval sql_query '{"query": "DROP TABLE users;"}' --role analyst
+# Output:
+# [BLOCKED] MCP TOOL CALL BLOCKED: sql_query
+# Policy: atlas.sql.readonly_enforcement
+# Reasons: Analyst agent role cannot execute mutating SQL statements (DROP)
+# MITRE ATLAS: AML.T0086
+# OWASP Category: ASI02
+```
+
+### 5. Verify Cryptographic Audit Ledger Integrity
+```bash
+python -m atlas.cli verify-audit
+# Output: [OK] SUCCESS: Ledger verified successfully (37 valid receipts, 0 tampered)
 ```
 
 ---

@@ -1,10 +1,13 @@
 """
-Policy Decision Point (PDP) evaluating Rego policies and AST argument inspectors.
+Policy Decision Point (PDP) evaluating Rego policies, AST argument inspectors, and autonomous rewriters.
 """
 
 from typing import Any
 
 import sqlglot
+from atlas.detectors.deobfuscator import RecursiveDeobfuscator
+from atlas.engine.shell_inspector import ShellASTInspector
+from atlas.engine.sql_rewriter import SQLSecurityRewriter
 from atlas.models import (
     AgentIdentity,
     DecisionOutcome,
@@ -17,10 +20,13 @@ from sqlglot import exp
 
 
 class PolicyEvaluator:
-    """Evaluates agent tool requests against authorization policies and AST inspectors."""
+    """Evaluates agent tool requests against authorization policies, AST inspectors, and auto-rewriters."""
 
     def __init__(self, workspace_root: str = "C:/Users/samue"):
         self.workspace_root = workspace_root
+        self.deobfuscator = RecursiveDeobfuscator()
+        self.shell_inspector = ShellASTInspector()
+        self.sql_rewriter = SQLSecurityRewriter(default_limit=100)
 
     def _parse_sql_ast(self, query: str) -> dict[str, Any]:
         """Extract statement type, tables, and operations from SQL query AST."""
@@ -75,7 +81,7 @@ class PolicyEvaluator:
         args: dict[str, Any],
         session: SessionState,
     ) -> PolicyDecision:
-        """Run policy decision pipeline against input context."""
+        """Run policy decision pipeline against input context with de-obfuscation and AST validation."""
         # 1. Check budget & loop limits
         if session.step_count > 15:
             mapping = taxonomy_mapper.enrich(
@@ -149,9 +155,32 @@ class PolicyEvaluator:
             )
 
         # 5. Specialized Tool AST & Parameter Guards
-        if tool == "sql_query":
-            query = args.get("query", "")
-            ast_info = self._parse_sql_ast(query)
+
+        # A. Shell Execution Tool (bashlex AST Inspection)
+        if tool in ["execute_command", "bash", "shell", "run_terminal", "exec_cmd"]:
+            raw_cmd = str(args.get("command", args.get("cmd", "")))
+            shell_res = self.shell_inspector.inspect(raw_cmd)
+
+            if not shell_res.is_safe:
+                mapping = taxonomy_mapper.enrich(
+                    atlas_id="AML.T0086",
+                    owasp_id="ASI05",
+                    nist_id="MANAGE-2.4",
+                    reason=f"Shell AST security violation: {shell_res.violation_reason}",
+                )
+                return PolicyDecision(
+                    outcome=DecisionOutcome.DENY,
+                    allowed=False,
+                    policy_name="atlas.shell.ast_execution_guard",
+                    reasons=[mapping.reason],
+                    mapping=mapping,
+                )
+
+        # B. SQL Query Tool (AST parsing & Autonomous Hardening Rewriter)
+        elif tool == "sql_query":
+            raw_query = args.get("query", "")
+            deob_query = self.deobfuscator.normalize(raw_query).normalized_text
+            ast_info = self._parse_sql_ast(deob_query)
 
             if not ast_info["valid"]:
                 mapping = taxonomy_mapper.enrich(
@@ -208,15 +237,34 @@ class PolicyEvaluator:
                     mapping=mapping,
                 )
 
+            # Auto-Rewrite Query (Inject safety LIMIT and tenant isolation)
+            tenant_filter = user.tenant_id if user.tenant_id != "default" else None
+            rewrite_res = self.sql_rewriter.rewrite_and_harden(
+                query=deob_query,
+                tenant_id=tenant_filter,
+            )
+
+            return PolicyDecision(
+                outcome=DecisionOutcome.ALLOW,
+                allowed=True,
+                policy_name="atlas.sql.allow_and_harden",
+                reasons=["SQL AST verified and safely rewritten with guardrails"],
+                mapping=None,
+                modified_args={"query": rewrite_res.rewritten_sql},
+            )
+
+        # C. Filesystem Tools (De-obfuscation & Sandbox containment)
         elif tool in ["read_file", "write_file"]:
-            path = str(args.get("path", ""))
-            # Path traversal check
-            if ".." in path or "../" in path or "..\\" in path:
+            raw_path = str(args.get("path", ""))
+            deob_path = self.deobfuscator.normalize(raw_path).normalized_text
+
+            # Path traversal check on normalized string
+            if ".." in deob_path or "../" in deob_path or "..\\" in deob_path:
                 mapping = taxonomy_mapper.enrich(
                     atlas_id="AML.T0086",
                     owasp_id="ASI05",
                     nist_id="MANAGE-2.4",
-                    reason=f"Path traversal detected in requested path '{path}'",
+                    reason=f"Path traversal detected in requested path '{raw_path}'",
                 )
                 return PolicyDecision(
                     outcome=DecisionOutcome.DENY,
@@ -236,7 +284,7 @@ class PolicyEvaluator:
                 ".aws/credentials",
             ]
             for pattern in sensitive_files:
-                if pattern in path.lower():
+                if pattern in deob_path.lower():
                     mapping = taxonomy_mapper.enrich(
                         atlas_id="AML.T0086",
                         owasp_id="ASI05",
@@ -251,12 +299,19 @@ class PolicyEvaluator:
                         mapping=mapping,
                     )
 
+        # D. Network Egress Tools
         elif tool in ["http_request", "fetch_url", "send_webhook"]:
-            url = str(args.get("url", ""))
+            raw_url = str(args.get("url", ""))
+            deob_url = self.deobfuscator.normalize(raw_url).normalized_text
+
             # Cloud Metadata SSRF guard
-            metadata_targets = ["169.254.169.254", "metadata.google.internal", "169.254.169.253"]
+            metadata_targets = [
+                "169.254.169.254",
+                "metadata.google.internal",
+                "169.254.169.253",
+            ]
             for target in metadata_targets:
-                if target in url.lower():
+                if target in deob_url.lower():
                     mapping = taxonomy_mapper.enrich(
                         atlas_id="AML.T0086",
                         owasp_id="ASI02",
