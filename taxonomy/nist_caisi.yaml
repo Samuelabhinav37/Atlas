@@ -1,0 +1,34 @@
+# NIST AI Risk Management Framework & CAISI 2026 AI Agent Standards Initiative
+# Runtime Control Mappings
+
+version: "2026.1"
+controls:
+  GOVERN-1.2:
+    id: "GOVERN-1.2"
+    function: "GOVERN"
+    description: "Roles, responsibilities, and delegated authority for AI actors are clearly defined and enforced at runtime."
+    runtime_action: "Agent Identity Binding & Scope Attestation"
+
+  MAP-1.5:
+    id: "MAP-1.5"
+    function: "MAP"
+    description: "System boundaries, tool interfaces, and autonomous agent capabilities are mapped and categorized."
+    runtime_action: "Tool Manifest Registration & Schema Validation"
+
+  MEASURE-2.7:
+    id: "MEASURE-2.7"
+    function: "MEASURE"
+    description: "Adversarial testing, prompt injection resilience, and context poisoning metrics are continuously evaluated."
+    runtime_action: "Live Threat Classification & Adversarial Telemetry"
+
+  MANAGE-2.4:
+    id: "MANAGE-2.4"
+    function: "MANAGE"
+    description: "Runtime controls and automated containment mechanisms mitigate unauthorized AI agent actions before execution."
+    runtime_action: "Deterministic Policy Decision Point (OPA/Rego) Blocking"
+
+  CAISI-ID-01:
+    id: "CAISI-ID-01"
+    function: "IDENTITY"
+    description: "Cryptographic, machine-scale workload identity and verifiable human delegation tokens for autonomous agents."
+    runtime_action: "SPIFFE/OAuth Token Exchange Attestation"

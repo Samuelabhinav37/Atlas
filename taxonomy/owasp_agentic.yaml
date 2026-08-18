@@ -1,0 +1,64 @@
+# OWASP Top 10 for Agentic Applications (2026 Edition)
+# Machine-readable threat and mitigation mappings
+
+version: "2026.1"
+categories:
+  ASI01:
+    id: "ASI01"
+    name: "Agent Goal Hijack"
+    description: "An attacker tricks the agent into abandoning its intended purpose to follow hidden or malicious instructions."
+    primary_mitigation: "Ingress & Context Delimiter Isolation, System Prompt Pinning"
+
+  ASI02:
+    id: "ASI02"
+    name: "Tool Misuse & Exploitation"
+    description: "Legitimate tools are invoked with unauthorized, destructive, or malicious arguments."
+    primary_mitigation: "Least Agency Rego Policies, AST Parameter Parsing, Parameter Whitelisting"
+
+  ASI03:
+    id: "ASI03"
+    name: "Identity & Privilege Abuse"
+    description: "Agent uses overprivileged, ambient credentials to access resources beyond authenticated user scope."
+    primary_mitigation: "OAuth Token Exchange (RFC 8693), User-to-Agent Scope Bounding, Step-Up Auth"
+
+  ASI04:
+    id: "ASI04"
+    name: "Agentic Supply Chain Vulnerabilities"
+    description: "Third-party agents, poisoned prompt templates, or untrusted MCP servers compromise agent integrity."
+    primary_mitigation: "MCP Signature Verification, Tool Manifest Hashing"
+
+  ASI05:
+    id: "ASI05"
+    name: "Unexpected Code Execution (RCE)"
+    description: "Agent generates and executes unauthorized system commands or script payloads."
+    primary_mitigation: "Shell AST Tokenizer, Command Sandbox, Strict Path Traversal Guards"
+
+  ASI06:
+    id: "ASI06"
+    name: "Memory & Context Poisoning"
+    description: "Malicious data injected into persistent memory, RAG chunks, or tool return payloads alters future actions."
+    primary_mitigation: "Inter-Tool Scrubber, Vector Store Content Quarantine"
+
+  ASI07:
+    id: "ASI07"
+    name: "Insecure Inter-Agent Communication"
+    description: "Lack of cryptographic authentication or integrity verification during multi-agent handoffs."
+    primary_mitigation: "Mutual TLS (mTLS), SPIFFE Workload IDs, Signed Agent State Envelopes"
+
+  ASI08:
+    id: "ASI08"
+    name: "Cascading Failures"
+    description: "Failures or rogue states in one agent propagate through autonomous agent networks."
+    primary_mitigation: "Budget Circuit Breakers, Call Depth Caps, Rate Limiting"
+
+  ASI09:
+    id: "ASI09"
+    name: "Human-Agent Trust Exploitation"
+    description: "Agent manipulates human users into approving dangerous actions or leaking sensitive data."
+    primary_mitigation: "Explicit Action Risk Scoring, Structured Approval Prompts"
+
+  ASI10:
+    id: "ASI10"
+    name: "Rogue Agents"
+    description: "Agent drifts from alignment, exhibiting deceptive behavior or unauthorized self-directed goals."
+    primary_mitigation: "Deterministic Invariant Assertion, Audit Ledger Anomaly Triggers"

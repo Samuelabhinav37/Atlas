@@ -1,0 +1,35 @@
+services:
+  atlas-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: atlas-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ATLAS_WORKSPACE_ROOT=/workspace
+    volumes:
+      - ./policies:/policies:ro
+      - ./taxonomy:/taxonomy:ro
+      - ./atlas_audit.jsonl:/app/atlas_audit.jsonl
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: atlas-opa
+    ports:
+      - "8181:8181"
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "/policies"
+    volumes:
+      - ./policies:/policies:ro
+    restart: unless-stopped

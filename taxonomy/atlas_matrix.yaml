@@ -1,0 +1,46 @@
+# MITRE ATLAS (Adversarial Threat Landscape for Artificial-Intelligence Systems)
+# Technique mappings for AI Agent Runtime Controls
+
+version: "2026.1"
+techniques:
+  AML.T0051:
+    id: "AML.T0051"
+    name: "LLM Prompt Injection"
+    tactic: "Execution / Defense Evasion"
+    description: "Adversary injects adversarial instructions directly via prompt interface to override model alignment."
+    mitigation: "Ingress Sanitize & Jailbreak Heuristics"
+
+  AML.T0054:
+    id: "AML.T0054"
+    name: "AI Agent Context Poisoning"
+    tactic: "Persistence / Defense Evasion"
+    description: "Adversary embeds malicious payloads in external data stores, documents, or tool responses retrieved by the agent."
+    mitigation: "Inter-Tool Return Scrubber & RAG Sanitization"
+
+  AML.T0053:
+    id: "AML.T0053"
+    name: "Exfiltration via ML Artifacts"
+    tactic: "Exfiltration"
+    description: "Adversary leverages agent capabilities to encode and exfiltrate sensitive data outside system boundaries."
+    mitigation: "Egress Filtering & Canary Traps"
+
+  AML.T0086:
+    id: "AML.T0086"
+    name: "Exfiltration via Agent Tool Invocation"
+    tactic: "Exfiltration / Execution"
+    description: "Adversary induces agent to invoke authorized tools (e.g. email, webhook, cloud storage) to transmit stolen data to attacker endpoints."
+    mitigation: "Deterministic Argument Whitelisting & Network Egress PEP"
+
+  AML.T0057:
+    id: "AML.T0057"
+    name: "Agentic Goal Hijacking"
+    tactic: "Impact"
+    description: "Adversary subverts the agent's high-level objective, redirecting agent reasoning loops toward unintended actions."
+    mitigation: "Semantic Invariant Verification & Circuit Breakers"
+
+  AML.T0040:
+    id: "AML.T0040"
+    name: "ML Supply Chain Compromise"
+    tactic: "Initial Access"
+    description: "Adversary compromises third-party tool definitions, MCP server configs, or prompt dependencies."
+    mitigation: "Strict Schema Enforcement & Integrity Attestation"
