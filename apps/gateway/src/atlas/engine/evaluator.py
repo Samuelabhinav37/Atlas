@@ -1,11 +1,13 @@
 """
 Policy Decision Point (PDP) evaluating Rego policies, AST argument inspectors, and autonomous rewriters.
+Includes Active Deception & Honeypot Trap validation.
 """
 
 from typing import Any
 
 import sqlglot
 from atlas.detectors.deobfuscator import RecursiveDeobfuscator
+from atlas.detectors.honeypots import HoneypotManager
 from atlas.engine.shell_inspector import ShellASTInspector
 from atlas.engine.sql_rewriter import SQLSecurityRewriter
 from atlas.models import (
@@ -27,6 +29,7 @@ class PolicyEvaluator:
         self.deobfuscator = RecursiveDeobfuscator()
         self.shell_inspector = ShellASTInspector()
         self.sql_rewriter = SQLSecurityRewriter(default_limit=100)
+        self.honeypot_manager = HoneypotManager()
 
     def _parse_sql_ast(self, query: str) -> dict[str, Any]:
         """Extract statement type, tables, and operations from SQL query AST."""
@@ -82,6 +85,17 @@ class PolicyEvaluator:
         session: SessionState,
     ) -> PolicyDecision:
         """Run policy decision pipeline against input context with de-obfuscation and AST validation."""
+        # 0. Active Deception / Honeypot Tool Trap Check
+        hp_res = self.honeypot_manager.check_trigger(tool, args)
+        if hp_res.triggered:
+            return PolicyDecision(
+                outcome=DecisionOutcome.DENY,
+                allowed=False,
+                policy_name="atlas.deception.honeypot_tool_trap",
+                reasons=[hp_res.violation_reason or "Honeypot tool triggered"],
+                mapping=hp_res.taxonomy,
+            )
+
         # 1. Check budget & loop limits
         if session.step_count > 15:
             mapping = taxonomy_mapper.enrich(
@@ -195,6 +209,21 @@ class PolicyEvaluator:
                     policy_name="atlas.sql.invalid_syntax",
                     reasons=[mapping.reason],
                     mapping=mapping,
+                )
+
+            # Check Decoy Table Honeypot Trigger
+            hp_table_res = self.honeypot_manager.check_trigger(
+                tool_name="sql_query",
+                arguments=args,
+                extracted_tables=ast_info["tables"],
+            )
+            if hp_table_res.triggered:
+                return PolicyDecision(
+                    outcome=DecisionOutcome.DENY,
+                    allowed=False,
+                    policy_name="atlas.deception.decoy_table_trap",
+                    reasons=[hp_table_res.violation_reason or "Decoy table trap triggered"],
+                    mapping=hp_table_res.taxonomy,
                 )
 
             # Restrict analyst role to SELECT queries
