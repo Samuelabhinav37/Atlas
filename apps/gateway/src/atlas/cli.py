@@ -11,6 +11,7 @@ from atlas.audit.ledger import AuditLedger
 from atlas.engine.evaluator import PolicyEvaluator
 from atlas.models import AgentIdentity, DecisionOutcome, SessionState, UserIdentity
 from atlas.proxy.mcp import MCPProxyInterceptor
+from atlas.redteam.fuzzer import RedTeamFuzzer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -86,6 +87,49 @@ def mcp_eval(
             console.print(f"[cyan]MITRE ATLAS:[/cyan] {err['data']['atlas_technique']}")
         if err["data"]["owasp_category"]:
             console.print(f"[magenta]OWASP Category:[/magenta] {err['data']['owasp_category']}")
+
+
+@app.command()
+def red_team():
+    """Run automated adversarial red-team fuzzing suite across all security layers."""
+    console.print(
+        Panel.fit(
+            "[bold red]Atlas Automated Adversarial Red-Teaming & Fuzzing Suite[/bold red]\n"
+            "[yellow]Executing 20+ Dynamic Attack Mutation Vectors...[/yellow]"
+        )
+    )
+    fuzzer = RedTeamFuzzer()
+    assessment = fuzzer.run_assessment()
+
+    table = Table(title="Red-Team Probe Execution Results")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Category", style="cyan")
+    table.add_column("Attack Probe", style="white")
+    table.add_column("Verdict", style="bold")
+    table.add_column("ATLAS ID", style="yellow")
+    table.add_column("OWASP", style="magenta")
+
+    for p in assessment.probe_results:
+        verdict_str = "[bold green][BLOCKED][/bold green]" if p.blocked else "[bold red][BYPASSED][/bold red]"
+        table.add_row(
+            p.probe_id,
+            p.category,
+            p.attack_name,
+            verdict_str,
+            p.mitre_atlas,
+            p.owasp_risk,
+        )
+
+    console.print(table)
+
+    score_color = "green" if assessment.security_posture_score >= 95 else "yellow"
+    console.print(
+        Panel.fit(
+            f"[bold {score_color}]Security Posture Score: {assessment.security_posture_score}%[/bold {score_color}]\n"
+            f"[white]Total Probes Executed: {assessment.total_probes} | Blocked: {assessment.total_blocked} | Bypassed: {assessment.total_bypassed}[/white]",
+            title="Red-Team Assessment Summary",
+        )
+    )
 
 
 @app.command()

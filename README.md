@@ -164,10 +164,18 @@ python -m atlas.cli mcp-eval sql_query '{"query": "DROP TABLE users;"}' --role a
 # OWASP Category: ASI02
 ```
 
-### 5. Verify Cryptographic Audit Ledger Integrity
+### 5. Run Automated Adversarial Red-Teaming Fuzzer
+```bash
+python -m atlas.cli red-team
+# Output:
+# Security Posture Score: 100.0%
+# Total Probes Executed: 20 | Blocked: 20 | Bypassed: 0
+```
+
+### 6. Verify Cryptographic Audit Ledger Integrity
 ```bash
 python -m atlas.cli verify-audit
-# Output: [OK] SUCCESS: Ledger verified successfully (37 valid receipts, 0 tampered)
+# Output: [OK] SUCCESS: Ledger verified successfully (50 valid receipts, 0 tampered)
 ```
 
 ---
