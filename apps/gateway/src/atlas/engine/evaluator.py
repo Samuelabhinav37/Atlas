@@ -191,7 +191,7 @@ class PolicyEvaluator:
                 )
 
         # B. SQL Query Tool (AST parsing & Autonomous Hardening Rewriter)
-        elif tool == "sql_query":
+        elif tool in ["sql_query", "execute_sql", "db_query", "query_database", "run_sql"] or "sql" in tool:
             raw_query = args.get("query", "")
             deob_query = self.deobfuscator.normalize(raw_query).normalized_text
             ast_info = self._parse_sql_ast(deob_query)

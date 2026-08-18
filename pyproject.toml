@@ -24,6 +24,9 @@ dependencies = [
   "typer>=0.15,<1",
 ]
 
+[project.scripts]
+atlas = "atlas.cli:app"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.4,<9",
