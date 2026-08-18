@@ -94,11 +94,13 @@ hardened_args = guard.protect_call(
 )
 # Automatically returns: {"query": "SELECT * FROM orders LIMIT 100;"}
 
+
 # Option 2: Wrap any tool function with a decorator
 @guard.wrap_tool
 def query_db(query: str):
     # This code only executes if authorized!
     return database.execute(query)
+
 
 # Option 3: Scan ingress user prompts
 guard.inspect_prompt("Summarize weekly reports")  # Allowed
