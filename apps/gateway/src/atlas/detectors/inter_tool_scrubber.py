@@ -71,9 +71,7 @@ class InterToolScrubber:
         secret_res = self.secret_scrubber.scan_and_redact(raw_output)
         sanitized = secret_res.sanitized_text
         if secret_res.has_secrets:
-            reasons.append(
-                f"Redacted sensitive tokens in tool output: {', '.join(secret_res.detected_types)}"
-            )
+            reasons.append(f"Redacted sensitive tokens in tool output: {', '.join(secret_res.detected_types)}")
 
         # If quarantined, wrap content with explicit untrusted markers or block
         if quarantine:

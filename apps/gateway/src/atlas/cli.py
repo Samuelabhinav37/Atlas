@@ -2,6 +2,7 @@
 Atlas CLI: Command line tool to run the gateway, verify audit trails, and simulate attacks.
 """
 
+import json
 from pathlib import Path
 
 import typer
@@ -9,13 +10,12 @@ import uvicorn
 from atlas.audit.ledger import AuditLedger
 from atlas.engine.evaluator import PolicyEvaluator
 from atlas.models import AgentIdentity, DecisionOutcome, SessionState, UserIdentity
+from atlas.proxy.mcp import MCPProxyInterceptor
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-app = typer.Typer(
-    help="Atlas: AI Agent Security Control Plane & Runtime Policy Enforcement Gateway"
-)
+app = typer.Typer(help="Atlas: AI Agent Security Control Plane & Runtime Policy Enforcement Gateway")
 console = Console()
 
 
@@ -25,11 +25,12 @@ def serve(
     port: int = typer.Option(8000, help="Port to listen on"),
     reload: bool = typer.Option(False, help="Enable auto-reload"),
 ):
-    """Start the Atlas Security Control Plane reverse proxy server."""
+    """Start the Atlas Security Control Plane reverse proxy server and Visual Dashboard."""
     console.print(
         Panel.fit(
             "[bold cyan]Atlas AI Agent Security Control Plane[/bold cyan]\n"
-            f"[green]Listening on http://{host}:{port}[/green]\n"
+            f"[green]API Gateway: http://{host}:{port}[/green]\n"
+            f"[bold magenta]Visual Observability Dashboard: http://{host}:{port}/dashboard[/bold magenta]\n"
             "[yellow]Enforcing MITRE ATLAS, OWASP Agentic 2026, and NIST AI RMF[/yellow]",
             title="Atlas Gateway",
         )
@@ -46,18 +47,52 @@ def verify_audit(
     valid, count, message = ledger.verify_ledger()
 
     if valid:
-        console.print(f"[bold green]✓ SUCCESS:[/bold green] {message}")
+        console.print(f"[bold green][OK] SUCCESS:[/bold green] {message}")
     else:
-        console.print(f"[bold red]✗ TAMPERING / CORRUPTION DETECTED:[/bold red] {message}")
+        console.print(f"[bold red][FAIL] TAMPERING / CORRUPTION DETECTED:[/bold red] {message}")
+
+
+@app.command()
+def mcp_eval(
+    tool: str = typer.Argument(..., help="Tool name requested by MCP client"),
+    args: str = typer.Argument("{}", help="JSON string of tool arguments"),
+    role: str = typer.Option("analyst", help="Agent role"),
+):
+    """Test evaluating a Model Context Protocol (MCP) JSON-RPC tools/call message."""
+    interceptor = MCPProxyInterceptor()
+    try:
+        parsed_args = json.loads(args)
+    except Exception as e:
+        console.print(f"[bold red]Invalid JSON arguments:[/bold red] {e}")
+        raise typer.Exit(code=1) from e
+
+    msg = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": parsed_args},
+    }
+    agent = AgentIdentity(agent_id="mcp_cli_agent", role=role)
+    proceed, blocked_resp = interceptor.process_request(msg, agent=agent)
+
+    if proceed:
+        console.print(f"[bold green][ALLOWED] MCP TOOL CALL APPROVED:[/bold green] {tool}")
+    else:
+        err = blocked_resp["error"]
+        console.print(f"[bold red][BLOCKED] MCP TOOL CALL BLOCKED:[/bold red] {tool}")
+        console.print(f"[yellow]Policy:[/yellow] {err['data']['policy']}")
+        console.print(f"[yellow]Reasons:[/yellow] {', '.join(err['data']['reasons'])}")
+        if err["data"]["atlas_technique"]:
+            console.print(f"[cyan]MITRE ATLAS:[/cyan] {err['data']['atlas_technique']}")
+        if err["data"]["owasp_category"]:
+            console.print(f"[magenta]OWASP Category:[/magenta] {err['data']['owasp_category']}")
 
 
 @app.command()
 def benchmark():
     """Run live adversarial attack simulations against the Atlas PEP."""
     evaluator = PolicyEvaluator()
-    console.print(
-        Panel.fit("[bold magenta]Running Adversarial Threat Benchmark Suite[/bold magenta]")
-    )
+    console.print(Panel.fit("[bold magenta]Running Adversarial Threat Benchmark Suite[/bold magenta]"))
 
     scenarios = [
         {

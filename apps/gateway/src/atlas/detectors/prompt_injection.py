@@ -43,9 +43,7 @@ class PromptInjectionDetector:
     def scan(self, text: str) -> InjectionScanResult:
         """Scan input text for adversarial injection markers."""
         if not text:
-            return InjectionScanResult(
-                is_suspicious=False, confidence=0.0, matched_patterns=[], description="Clean"
-            )
+            return InjectionScanResult(is_suspicious=False, confidence=0.0, matched_patterns=[], description="Clean")
 
         matches = []
         max_confidence = 0.0

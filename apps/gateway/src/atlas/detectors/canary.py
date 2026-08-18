@@ -32,9 +32,7 @@ class CanaryTrapEngine:
     def check_leak(self, session_id: str, text: str) -> CanaryLeakResult:
         """Inspect outbound text or tool arguments for active canary tokens."""
         if not text or session_id not in self._active_canaries:
-            return CanaryLeakResult(
-                leaked=False, canary_token=None, description="No canary present"
-            )
+            return CanaryLeakResult(leaked=False, canary_token=None, description="No canary present")
 
         for token in self._active_canaries[session_id]:
             if token in text:

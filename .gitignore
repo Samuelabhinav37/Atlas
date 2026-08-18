@@ -39,6 +39,7 @@ htmlcov/
 *.key
 *.pem
 *.sqlite
+*.jsonl
 
 # IDEs
 .vscode/

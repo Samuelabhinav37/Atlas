@@ -43,10 +43,7 @@ def test_secret_scrubber():
     text = "Connecting to API with key sk-proj1234567890abcdef1234567890 and AWS key AKIAIOSFODNN7EXAMPLE"
     res = scrubber.scan_and_redact(text)
     assert res.has_secrets is True
-    assert (
-        "[REDACTED:OPENAI_API_KEY]" in res.sanitized_text
-        or "[REDACTED:AWS_ACCESS_KEY]" in res.sanitized_text
-    )
+    assert "[REDACTED:OPENAI_API_KEY]" in res.sanitized_text or "[REDACTED:AWS_ACCESS_KEY]" in res.sanitized_text
 
 
 def test_inter_tool_context_poisoning():
