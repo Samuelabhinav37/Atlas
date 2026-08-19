@@ -23,10 +23,8 @@ class ShellASTInspector:
     """Parses shell commands into AST nodes and identifies dangerous execution patterns."""
 
     DANGEROUS_COMMANDS = {
-        "rm": ["-rf", "-fr", "/"],
         "mkfs": [],
         "dd": ["if=", "of=/dev"],
-        "chmod": ["777", "-R 777", "+x /"],
         "shutdown": [],
         "reboot": [],
         "init": ["0", "6"],
@@ -35,26 +33,105 @@ class ShellASTInspector:
         "socat": ["exec:"],
     }
 
+    # Root-level system paths that rm should never target
+    DESTRUCTIVE_RM_TARGETS = {
+        "/", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/opt",
+        "/proc", "/root", "/sbin", "/srv", "/sys", "/tmp", "/usr", "/var",
+        "C:\\", "C:\\Windows", "C:\\System32", "C:\\Program Files",
+    }
+
     REVERSE_SHELL_PATTERNS = [
-        r"/dev/tcp/\d+\.\d+\.\d+\.\d+/\d+",
-        r"bash\s+-i\s+>&",
-        r"nc\s+-[a-zA-Z]*e\s+",
-        r"socat\s+tcp-connect",
-        r"python\s+-c\s+['\"].*import\s+socket",
+        re.compile(r"/dev/tcp/\d+\.\d+\.\d+\.\d+/\d+"),
+        re.compile(r"bash\s+-i\s+>&"),
+        re.compile(r"nc\s+-[a-zA-Z]*e\s+"),
+        re.compile(r"socat\s+tcp-connect", re.IGNORECASE),
+        re.compile(r"python\s+-c\s+['\"].*import\s+socket"),
     ]
 
     PIPE_EXEC_PATTERNS = [
-        r"(?i)\|\s*(sh|bash|zsh|dash|python|perl|ruby)\b",
-        r"(?i)(curl|wget)\s+[^\s|]+\s*\|\s*(sh|bash)",
+        re.compile(r"(?i)\|\s*(sh|bash|zsh|dash|python|perl|ruby)\b"),
+        re.compile(r"(?i)(curl|wget)\s+[^\s|]+\s*\|\s*(sh|bash)"),
     ]
 
     SUBSHELL_PATTERNS = [
-        r"\$\([^)]+\)",
-        r"`[^`]+`",
+        re.compile(r"\$\([^)]+\)"),
+        re.compile(r"`[^`]+`"),
+    ]
+
+    # chmod dangerous permission patterns
+    CHMOD_DANGEROUS_PATTERNS = [
+        re.compile(r"\b0?[67][67][67]\b"),       # 777, 0777, 666, 0666, etc.
+        re.compile(r"\b(ugo|a)\s*=\s*rwx\b"),    # ugo=rwx, a=rwx
+    ]
+
+    # PowerShell dangerous cmdlet patterns
+    POWERSHELL_PATTERNS = [
+        (re.compile(r"(?i)Remove-Item\s+.*-Recurse.*-Force|Remove-Item\s+.*-Force.*-Recurse"), "PowerShell destructive Remove-Item with -Recurse -Force"),
+        (re.compile(r"(?i)\b(Invoke-Expression|iex)\b"), "PowerShell Invoke-Expression (arbitrary code execution)"),
+        (re.compile(r"(?i)Invoke-WebRequest\s+.*\|\s*(Invoke-Expression|iex)"), "PowerShell download-and-execute pattern"),
+        (re.compile(r"(?i)Set-ExecutionPolicy\s+Unrestricted"), "PowerShell execution policy bypass"),
+        (re.compile(r"(?i)\b(Stop-Computer|Restart-Computer)\b"), "PowerShell system shutdown/restart"),
+    ]
+
+    # Script interpreter invocation patterns
+    INTERPRETER_PATTERNS = [
+        re.compile(r"(?i)\bpython[23]?\s+-c\b"),
+        re.compile(r"(?i)\bperl\s+-e\b"),
+        re.compile(r"(?i)\bnode\s+-e\b"),
+        re.compile(r"(?i)\bruby\s+-e\b"),
+        re.compile(r"(?i)\blua\s+-e\b"),
     ]
 
     def __init__(self):
         self.deobfuscator = RecursiveDeobfuscator()
+
+    def _check_rm_dangerous(self, cmd_parts: list[str]) -> str | None:
+        """Check if an rm command is genuinely dangerous (recursive+force on system paths).
+
+        Returns a risk description string if dangerous, None if safe.
+        Avoids false positives like `rm -f /workspace/temp/file.txt`.
+        """
+        if not cmd_parts or cmd_parts[0].lower() != "rm":
+            return None
+
+        flags: set[str] = set()
+        paths: list[str] = []
+
+        for part in cmd_parts[1:]:
+            if part.startswith("-") and not part.startswith("--"):
+                # Expand combined flags: -rf -> {r, f}
+                for char in part[1:]:
+                    flags.add(char)
+            elif part.startswith("--"):
+                if part == "--recursive":
+                    flags.add("r")
+                elif part == "--force":
+                    flags.add("f")
+                elif part == "--no-preserve-root":
+                    flags.add("no-preserve-root")
+            else:
+                paths.append(part)
+
+        has_recursive = "r" in flags or "R" in flags
+        has_force = "f" in flags
+
+        # Check for destructive targets
+        for path in paths:
+            normalized_path = path.rstrip("/").rstrip("\\")
+            if not normalized_path:
+                normalized_path = "/"
+
+            if normalized_path in self.DESTRUCTIVE_RM_TARGETS or normalized_path == "/":
+                if has_recursive and has_force:
+                    return f"Destructive rm -rf targeting system path '{path}'"
+                if normalized_path == "/" or normalized_path in {"C:\\", "C:\\Windows"}:
+                    return f"Destructive rm targeting root/system path '{path}'"
+
+        # Also catch `rm -rf /` even if flags are split
+        if has_recursive and has_force and "no-preserve-root" in flags:
+            return "Destructive rm with --no-preserve-root"
+
+        return None
 
     def inspect(self, command_line: str) -> ShellScanResult:
         """Parse command with bashlex and AST visitors to detect malicious behavior."""
@@ -75,20 +152,30 @@ class ShellASTInspector:
 
         # 2. Reverse Shell Signatures
         for pattern in self.REVERSE_SHELL_PATTERNS:
-            if re.search(pattern, normalized_cmd):
-                risks.append(f"Reverse shell signature detected: {pattern}")
+            if pattern.search(normalized_cmd):
+                risks.append(f"Reverse shell signature detected: {pattern.pattern}")
 
         # 3. Pipe to Shell Execution
         for pattern in self.PIPE_EXEC_PATTERNS:
-            if re.search(pattern, normalized_cmd):
+            if pattern.search(normalized_cmd):
                 risks.append("Dangerous pipe to shell execution (e.g. curl | sh)")
 
         # 4. Subshell Command Substitution
         for pattern in self.SUBSHELL_PATTERNS:
-            if re.search(pattern, normalized_cmd):
+            if pattern.search(normalized_cmd):
                 risks.append("Unauthorized subshell command substitution $(...) detected")
 
-        # 5. AST Parsing via bashlex
+        # 5. PowerShell Dangerous Cmdlets
+        for pattern, description in self.POWERSHELL_PATTERNS:
+            if pattern.search(normalized_cmd):
+                risks.append(f"Dangerous PowerShell pattern: {description}")
+
+        # 6. Script Interpreter Invocation
+        for pattern in self.INTERPRETER_PATTERNS:
+            if pattern.search(normalized_cmd):
+                risks.append("Script interpreter invocation detected (potential code execution bypass)")
+
+        # 7. AST Parsing via bashlex
         try:
             nodes = bashlex.parse(normalized_cmd)
             for node in nodes:
@@ -97,12 +184,23 @@ class ShellASTInspector:
             # If bashlex cannot parse complex shell syntax, check with regex fallback
             risks.append("Unparseable or malformed shell command AST")
 
-        # 6. Check extracted commands against dangerous commands table
+        # 8. Check extracted commands against dangerous commands table + rm hardening
         for cmd_entry in commands_found:
             cmd_parts = cmd_entry.split()
             base_cmd = cmd_parts[0].lower() if cmd_parts else ""
 
-            if base_cmd in self.DANGEROUS_COMMANDS:
+            # Special handling for rm with proper flag parsing
+            if base_cmd == "rm":
+                rm_risk = self._check_rm_dangerous(cmd_parts)
+                if rm_risk:
+                    risks.append(rm_risk)
+            elif base_cmd == "chmod":
+                # Check for dangerous permission patterns
+                for chmod_pat in self.CHMOD_DANGEROUS_PATTERNS:
+                    if chmod_pat.search(cmd_entry):
+                        risks.append(f"Dangerous chmod permission: '{cmd_entry}'")
+                        break
+            elif base_cmd in self.DANGEROUS_COMMANDS:
                 required_args = self.DANGEROUS_COMMANDS[base_cmd]
                 if not required_args:
                     risks.append(f"Destructive binary invocation forbidden: '{base_cmd}'")

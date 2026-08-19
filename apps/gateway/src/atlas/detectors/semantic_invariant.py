@@ -24,6 +24,31 @@ class GoalDriftResult:
     violation_reason: str | None = None
 
 
+# Critical verbs that signal destructive administrative actions
+_CRITICAL_VERBS = [
+    "drop",
+    "truncate",
+    "delete",
+    "shutdown",
+    "reboot",
+    "exfiltrate",
+    "destroy",
+    "wipe",
+    "purge",
+]
+
+# Pre-compile word-boundary patterns for each critical verb
+_CRITICAL_VERB_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (verb, re.compile(rf"\b{re.escape(verb)}\b", re.IGNORECASE)) for verb in _CRITICAL_VERBS
+]
+
+# SQL statement prefixes that indicate a query value (where critical verbs are meaningful)
+_SQL_PREFIXES = re.compile(
+    r"^\s*(SELECT|INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b",
+    re.IGNORECASE,
+)
+
+
 class SemanticInvariantChecker:
     """
     Evaluates semantic divergence between an agent's initial user objective
@@ -56,6 +81,41 @@ class SemanticInvariantChecker:
         if not denominator:
             return 0.0
         return float(numerator) / denominator
+
+    def _check_critical_verbs(
+        self, tool_name: str, tool_args: dict[str, Any], original_goal: str
+    ) -> bool:
+        """Check for critical verb divergence using word-boundary matching.
+
+        Only flags when:
+        1. A critical verb appears in the tool_name itself, OR
+        2. A critical verb appears in argument values that look like SQL statements
+        AND the verb does NOT appear in the original goal.
+        """
+        # Check if any critical verb is in the original goal (if so, it's intentional)
+        goal_has_verb = {
+            verb for verb, pattern in _CRITICAL_VERB_PATTERNS if pattern.search(original_goal)
+        }
+
+        # Check tool name with word-boundary matching
+        for verb, pattern in _CRITICAL_VERB_PATTERNS:
+            if verb in goal_has_verb:
+                continue
+            if pattern.search(tool_name):
+                return True
+
+        # Check argument values — but ONLY values that look like SQL statements
+        for _key, value in tool_args.items():
+            str_val = str(value)
+            if not _SQL_PREFIXES.match(str_val):
+                continue
+            for verb, pattern in _CRITICAL_VERB_PATTERNS:
+                if verb in goal_has_verb:
+                    continue
+                if pattern.search(str_val):
+                    return True
+
+        return False
 
     def set_session_goal(self, session_id: str, goal_prompt: str):
         """Record the initial user prompt / objective for a session."""
@@ -90,21 +150,8 @@ class SemanticInvariantChecker:
 
         sim = self._cosine_similarity(vec_goal, vec_action)
 
-        # Certain critical administrative actions that diverge from benign goals trigger drift
-        critical_verbs = [
-            "drop",
-            "truncate",
-            "delete",
-            "format",
-            "shutdown",
-            "reboot",
-            "exfiltrate",
-            "passwd",
-            "shadow",
-        ]
-        has_critical_divergence = any(v in action_text.lower() for v in critical_verbs) and not any(
-            v in original_goal.lower() for v in critical_verbs
-        )
+        # Use word-boundary matching with context-aware verb detection
+        has_critical_divergence = self._check_critical_verbs(tool_name, tool_args, original_goal)
 
         has_drifted = (sim < self.drift_threshold) or has_critical_divergence
 

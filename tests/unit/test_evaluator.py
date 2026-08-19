@@ -103,7 +103,7 @@ def test_blocked_cloud_metadata_ssrf():
 
     assert decision.allowed is False
     assert decision.outcome == DecisionOutcome.DENY
-    assert "cloud instance metadata" in decision.reasons[0]
+    assert "SSRF attempt" in decision.reasons[0]
 
 
 def test_step_up_challenge():
@@ -122,3 +122,157 @@ def test_step_up_challenge():
 
     assert decision.allowed is False
     assert decision.outcome == DecisionOutcome.STEP_UP_REQUIRED
+
+
+def test_blocked_absolute_path_etc_passwd():
+    """Phase 1.1: Absolute path /etc/passwd (no ..) must be blocked."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="bob", scopes=["read_file:execute"])
+    agent = AgentIdentity(agent_id="reader_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="read_file",
+        args={"path": "/etc/passwd"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+
+
+def test_blocked_absolute_path_windows():
+    """Phase 1.1: Windows absolute path outside sandbox must be blocked."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="bob", scopes=["read_file:execute"])
+    agent = AgentIdentity(agent_id="reader_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="read_file",
+        args={"path": "C:\\Windows\\System32\\config\\SAM"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+
+
+def test_allowed_file_in_workspace():
+    """Phase 1.1: File within workspace_root must be ALLOWED."""
+    evaluator = PolicyEvaluator(workspace_root="C:/Users/samue")
+    user = UserIdentity(user_id="bob", scopes=["read_file:execute"])
+    agent = AgentIdentity(agent_id="reader_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="read_file",
+        args={"path": "C:/Users/samue/Atlas/README.md"},
+        session=session,
+    )
+
+    assert decision.allowed is True
+    assert decision.outcome == DecisionOutcome.ALLOW
+
+
+def test_blocked_filepath_arg_key():
+    """Phase 1.1: filepath arg key (not just path) must be caught."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="bob", scopes=["read_file:execute"])
+    agent = AgentIdentity(agent_id="reader_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="read_file",
+        args={"filepath": "/etc/shadow"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+
+
+def test_blocked_localhost_ssrf():
+    """Phase 1.2: http://127.0.0.1 must be blocked."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="charlie", scopes=["fetch_url:execute"])
+    agent = AgentIdentity(agent_id="crawler_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="fetch_url",
+        args={"url": "http://127.0.0.1:8080/admin"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+    assert "SSRF attempt" in decision.reasons[0]
+
+
+def test_blocked_rfc1918_ssrf():
+    """Phase 1.2: http://10.0.0.1 (RFC1918) must be blocked."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="charlie", scopes=["fetch_url:execute"])
+    agent = AgentIdentity(agent_id="crawler_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="fetch_url",
+        args={"url": "http://10.0.0.1/internal"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+    assert "SSRF attempt" in decision.reasons[0]
+
+
+def test_blocked_ipv6_loopback_ssrf():
+    """Phase 1.2: http://[::1] (IPv6 loopback) must be blocked."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="charlie", scopes=["fetch_url:execute"])
+    agent = AgentIdentity(agent_id="crawler_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="fetch_url",
+        args={"url": "http://[::1]/admin"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+
+
+def test_allowed_public_url():
+    """Phase 1.2: Public URL must be ALLOWED."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="charlie", scopes=["fetch_url:execute"])
+    agent = AgentIdentity(agent_id="crawler_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="fetch_url",
+        args={"url": "https://api.example.com/data"},
+        session=session,
+    )
+
+    assert decision.allowed is True
+    assert decision.outcome == DecisionOutcome.ALLOW

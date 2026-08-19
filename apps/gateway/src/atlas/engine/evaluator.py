@@ -3,7 +3,12 @@ Policy Decision Point (PDP) evaluating Rego policies, AST argument inspectors, a
 Includes Active Deception & Honeypot Trap validation.
 """
 
+import ipaddress
+import os
+import re
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
+from urllib.parse import urlparse
 
 import sqlglot
 from atlas.detectors.deobfuscator import RecursiveDeobfuscator
@@ -20,16 +25,157 @@ from atlas.models import (
 from atlas.telemetry.mapper import taxonomy_mapper
 from sqlglot import exp
 
+# All argument key names that might contain file paths
+_PATH_ARG_KEYS = {"path", "filepath", "filename", "file", "src", "dest", "destination", "source", "target"}
+
+# All argument key names that might contain URLs
+_URL_ARG_KEYS = {"url", "uri", "endpoint", "address", "webhook_url", "callback_url", "target_url"}
+
+# Expanded filesystem tool names
+_FS_TOOLS = {"read_file", "write_file", "delete_file", "copy_file", "move_file", "upload_file", "download_file"}
+
+# Expanded network egress tool names
+_NET_TOOLS = {"http_request", "fetch_url", "send_webhook", "api_call", "webhook", "post_request", "get_request"}
+
+# Expanded sensitive file patterns
+_SENSITIVE_FILE_PATTERNS = [
+    ".env",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_ecdsa.pub",
+    "shadow",
+    "passwd",
+    ".aws/credentials",
+    "authorized_keys",
+    "known_hosts",
+    ".ssh/config",
+    ".git/config",
+    ".gitconfig",
+    ".kube/config",
+    "kubeconfig",
+    ".docker/config.json",
+    ".npmrc",
+    ".pypirc",
+    "master.key",
+    "credentials.json",
+    "service_account.json",
+    ".htpasswd",
+    "wp-config.php",
+]
+
+# Private / reserved IP networks for SSRF blocking
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),        # Loopback
+    ipaddress.ip_network("10.0.0.0/8"),          # RFC1918
+    ipaddress.ip_network("172.16.0.0/12"),       # RFC1918
+    ipaddress.ip_network("192.168.0.0/16"),      # RFC1918
+    ipaddress.ip_network("169.254.0.0/16"),      # Link-local (includes cloud metadata)
+    ipaddress.ip_network("0.0.0.0/8"),           # "This" network
+    ipaddress.ip_network("::1/128"),             # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),            # IPv6 unique local
+    ipaddress.ip_network("fe80::/10"),           # IPv6 link-local
+]
+
+# Hostnames that should always be blocked (cloud metadata, localhost aliases)
+_BLOCKED_HOSTNAMES = {
+    "localhost",
+    "metadata.google.internal",
+    "metadata.internal",
+    "instance-data",
+}
+
+# Hostname regex for cloud metadata IPs even in non-standard forms
+_METADATA_IP_RE = re.compile(r"169\.254\.169\.254|169\.254\.169\.253")
+
+
+def _is_private_or_reserved(hostname: str) -> bool:
+    """Check if a hostname resolves to a private/reserved IP address."""
+    # Check blocked hostnames
+    if hostname.lower() in _BLOCKED_HOSTNAMES:
+        return True
+
+    # Strip IPv6 brackets
+    clean_host = hostname.strip("[]")
+
+    # Try parsing as IP address directly
+    try:
+        addr = ipaddress.ip_address(clean_host)
+        return any(addr in network for network in _BLOCKED_NETWORKS)
+    except ValueError:
+        pass
+
+    # Check metadata IP pattern in the hostname string
+    return bool(_METADATA_IP_RE.search(hostname))
+
 
 class PolicyEvaluator:
     """Evaluates agent tool requests against authorization policies, AST inspectors, and auto-rewriters."""
 
     def __init__(self, workspace_root: str = "C:/Users/samue"):
-        self.workspace_root = workspace_root
+        self.workspace_root = os.path.normpath(workspace_root)
         self.deobfuscator = RecursiveDeobfuscator()
         self.shell_inspector = ShellASTInspector()
         self.sql_rewriter = SQLSecurityRewriter(default_limit=100)
         self.honeypot_manager = HoneypotManager()
+
+    def _is_path_in_sandbox(self, path_str: str) -> bool:
+        """Check if a path is contained within the workspace_root sandbox.
+
+        Uses both PurePosixPath and PureWindowsPath to handle cross-platform paths.
+        """
+        # Normalize the path
+        normalized = os.path.normpath(path_str)
+
+        # If it's an absolute path, check containment directly
+        if os.path.isabs(normalized):
+            # Check if it starts with workspace root
+            ws_root = self.workspace_root
+            try:
+                # Use os.path.commonpath to check containment
+                common = os.path.commonpath([ws_root, normalized])
+                return os.path.normpath(common) == os.path.normpath(ws_root)
+            except ValueError:
+                # Different drives on Windows
+                return False
+
+        # For relative paths, resolve against workspace root and check
+        # Also check for traversal
+        try:
+            # Try PurePosixPath
+            resolved = PurePosixPath(self.workspace_root) / PurePosixPath(path_str)
+            resolved_str = os.path.normpath(str(resolved))
+            common = os.path.commonpath([self.workspace_root, resolved_str])
+            return os.path.normpath(common) == os.path.normpath(self.workspace_root)
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            # Try PureWindowsPath
+            resolved = PureWindowsPath(self.workspace_root) / PureWindowsPath(path_str)
+            resolved_str = os.path.normpath(str(resolved))
+            common = os.path.commonpath([self.workspace_root, resolved_str])
+            return os.path.normpath(common) == os.path.normpath(self.workspace_root)
+        except (ValueError, TypeError):
+            return False
+
+    def _extract_path_args(self, args: dict[str, Any]) -> list[str]:
+        """Extract all path-like argument values from args dict."""
+        paths = []
+        for key in _PATH_ARG_KEYS:
+            val = args.get(key)
+            if val:
+                paths.append(str(val))
+        return paths
+
+    def _extract_url_args(self, args: dict[str, Any]) -> list[str]:
+        """Extract all URL-like argument values from args dict."""
+        urls = []
+        for key in _URL_ARG_KEYS:
+            val = args.get(key)
+            if val:
+                urls.append(str(val))
+        return urls
 
     def _parse_sql_ast(self, query: str) -> dict[str, Any]:
         """Extract statement type, tables, and operations from SQL query AST."""
@@ -283,69 +429,106 @@ class PolicyEvaluator:
             )
 
         # C. Filesystem Tools (De-obfuscation & Sandbox containment)
-        elif tool in ["read_file", "write_file"]:
-            raw_path = str(args.get("path", ""))
-            deob_path = self.deobfuscator.normalize(raw_path).normalized_text
+        elif tool in _FS_TOOLS:
+            raw_paths = self._extract_path_args(args)
+            if not raw_paths:
+                raw_paths = [str(args.get("path", ""))]
 
-            # Path traversal check on normalized string
-            if ".." in deob_path or "../" in deob_path or "..\\" in deob_path:
-                mapping = taxonomy_mapper.enrich(
-                    atlas_id="AML.T0086",
-                    owasp_id="ASI05",
-                    nist_id="MANAGE-2.4",
-                    reason=f"Path traversal detected in requested path '{raw_path}'",
-                )
-                return PolicyDecision(
-                    outcome=DecisionOutcome.DENY,
-                    allowed=False,
-                    policy_name="atlas.fs.path_traversal",
-                    reasons=[mapping.reason],
-                    mapping=mapping,
-                )
+            for raw_path in raw_paths:
+                if not raw_path:
+                    continue
+                deob_path = self.deobfuscator.normalize(raw_path).normalized_text
 
-            # Sensitive file extensions or patterns
-            sensitive_files = [
-                ".env",
-                "id_rsa",
-                "id_ed25519",
-                "shadow",
-                "passwd",
-                ".aws/credentials",
-            ]
-            for pattern in sensitive_files:
-                if pattern in deob_path.lower():
+                # Path traversal check on normalized string
+                if ".." in deob_path:
                     mapping = taxonomy_mapper.enrich(
                         atlas_id="AML.T0086",
                         owasp_id="ASI05",
                         nist_id="MANAGE-2.4",
-                        reason=f"Access to sensitive file pattern '{pattern}' is forbidden",
+                        reason=f"Path traversal detected in requested path '{raw_path}'",
                     )
                     return PolicyDecision(
                         outcome=DecisionOutcome.DENY,
                         allowed=False,
-                        policy_name="atlas.fs.sensitive_file_block",
+                        policy_name="atlas.fs.path_traversal",
                         reasons=[mapping.reason],
                         mapping=mapping,
                     )
 
-        # D. Network Egress Tools
-        elif tool in ["http_request", "fetch_url", "send_webhook"]:
-            raw_url = str(args.get("url", ""))
-            deob_url = self.deobfuscator.normalize(raw_url).normalized_text
+                # Sandbox containment: absolute paths must be under workspace_root
+                if os.path.isabs(deob_path) and not self._is_path_in_sandbox(deob_path):
+                    mapping = taxonomy_mapper.enrich(
+                        atlas_id="AML.T0086",
+                        owasp_id="ASI05",
+                        nist_id="MANAGE-2.4",
+                        reason=f"Path '{raw_path}' is outside sandbox workspace root '{self.workspace_root}'",
+                    )
+                    return PolicyDecision(
+                        outcome=DecisionOutcome.DENY,
+                        allowed=False,
+                        policy_name="atlas.fs.sandbox_escape",
+                        reasons=[mapping.reason],
+                        mapping=mapping,
+                    )
 
-            # Cloud Metadata SSRF guard
-            metadata_targets = [
-                "169.254.169.254",
-                "metadata.google.internal",
-                "169.254.169.253",
-            ]
-            for target in metadata_targets:
-                if target in deob_url.lower():
+                # Sensitive file patterns
+                for pattern in _SENSITIVE_FILE_PATTERNS:
+                    if pattern in deob_path.lower():
+                        mapping = taxonomy_mapper.enrich(
+                            atlas_id="AML.T0086",
+                            owasp_id="ASI05",
+                            nist_id="MANAGE-2.4",
+                            reason=f"Access to sensitive file pattern '{pattern}' is forbidden",
+                        )
+                        return PolicyDecision(
+                            outcome=DecisionOutcome.DENY,
+                            allowed=False,
+                            policy_name="atlas.fs.sensitive_file_block",
+                            reasons=[mapping.reason],
+                            mapping=mapping,
+                        )
+
+        # D. Network Egress Tools (Hardened SSRF Guard)
+        elif tool in _NET_TOOLS:
+            raw_urls = self._extract_url_args(args)
+            if not raw_urls:
+                raw_urls = [str(args.get("url", ""))]
+
+            for raw_url in raw_urls:
+                if not raw_url:
+                    continue
+                deob_url = self.deobfuscator.normalize(raw_url).normalized_text
+
+                # Parse URL to extract hostname
+                try:
+                    parsed = urlparse(deob_url)
+                    hostname = parsed.hostname or ""
+                except Exception:
+                    hostname = ""
+
+                # Check hostname against private/reserved ranges
+                if hostname and _is_private_or_reserved(hostname):
                     mapping = taxonomy_mapper.enrich(
                         atlas_id="AML.T0086",
                         owasp_id="ASI02",
                         nist_id="MANAGE-2.4",
-                        reason=f"SSRF attempt targeting cloud instance metadata service: {target}",
+                        reason=f"SSRF attempt targeting private/reserved address: {hostname}",
+                    )
+                    return PolicyDecision(
+                        outcome=DecisionOutcome.DENY,
+                        allowed=False,
+                        policy_name="atlas.egress.ssrf_private_network_block",
+                        reasons=[mapping.reason],
+                        mapping=mapping,
+                    )
+
+                # Also check raw URL string for metadata IPs (catches non-standard URL formats)
+                if _METADATA_IP_RE.search(deob_url):
+                    mapping = taxonomy_mapper.enrich(
+                        atlas_id="AML.T0086",
+                        owasp_id="ASI02",
+                        nist_id="MANAGE-2.4",
+                        reason="SSRF attempt targeting cloud instance metadata service",
                     )
                     return PolicyDecision(
                         outcome=DecisionOutcome.DENY,
