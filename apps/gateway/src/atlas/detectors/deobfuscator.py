@@ -22,7 +22,6 @@ class RecursiveDeobfuscator:
     """Recursively extracts and decodes obfuscated payloads (URL, Base64, Hex, Unicode)."""
 
     BASE64_CANDIDATE_REGEX = re.compile(r"(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
-    HEX_REGEX = re.compile(r"\\x[0-9a-fA-F]{2}|0x[0-9a-fA-F]{2}")
 
     def normalize(self, text: str, max_depth: int = 5) -> DeobfuscationResult:
         """Recursively normalize and decode text until fixed point or max depth reached."""
@@ -70,7 +69,7 @@ class RecursiveDeobfuscator:
                             and all(c.isprintable() or c in "\n\r\t" for c in decoded_str)
                             and any(c.isalpha() for c in decoded_str)
                         ):
-                            current = current.replace(match, decoded_str)
+                            current = current.replace(match, decoded_str, 1)
                             unpacked_layers.append(f"base64_decode({match[:8]}...)")
                             changed = True
                     except (binascii.Error, UnicodeDecodeError):
@@ -80,7 +79,7 @@ class RecursiveDeobfuscator:
             if "\\x" in current or "\\X" in current:
                 try:
                     hex_decoded = re.sub(
-                        r"\\x([0-9a-fA-F]{2})",
+                        r"\\[xX]([0-9a-fA-F]{2})",
                         lambda m: chr(int(m.group(1), 16)),
                         current,
                     )

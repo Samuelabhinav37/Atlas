@@ -7,7 +7,7 @@ from atlas.sdk import AtlasGuard, SecurityViolationError
 
 
 def test_sdk_allow_safe_tool_call():
-    guard = AtlasGuard()
+    guard = AtlasGuard(default_scopes=["sql_query:execute"])
     res_args = guard.protect_call(
         tool_name="sql_query",
         arguments={"query": "SELECT id, name FROM users;"},
@@ -17,7 +17,7 @@ def test_sdk_allow_safe_tool_call():
 
 
 def test_sdk_block_destructive_tool_call():
-    guard = AtlasGuard()
+    guard = AtlasGuard(default_scopes=["sql_query:execute"])
     with pytest.raises(SecurityViolationError) as exc_info:
         guard.protect_call(
             tool_name="sql_query",
@@ -27,8 +27,20 @@ def test_sdk_block_destructive_tool_call():
     assert "cannot execute mutating SQL" in str(exc_info.value)
 
 
+def test_sdk_block_missing_scope():
+    """Verify that the SDK correctly blocks calls when no scopes are configured (least-privilege)."""
+    guard = AtlasGuard()  # No scopes — should block everything
+    with pytest.raises(SecurityViolationError) as exc_info:
+        guard.protect_call(
+            tool_name="sql_query",
+            arguments={"query": "SELECT 1;"},
+            role="analyst",
+        )
+    assert "lacks required scope" in str(exc_info.value)
+
+
 def test_sdk_wrap_tool_decorator():
-    guard = AtlasGuard()
+    guard = AtlasGuard(default_scopes=["execute_sql:execute"])
 
     @guard.wrap_tool
     def execute_sql(query: str):

@@ -71,4 +71,4 @@ def test_mcp_response_scrubber_quarantine():
     sanitized = interceptor.process_response(tool_name="read_meeting_notes", response_msg=response_msg)
     content_item = sanitized["result"]["content"][0]
     assert content_item["atlas_quarantined"] is True
-    assert "ATLAS QUARANTINE WARNING" in content_item["text"]
+    assert "ATLAS QUARANTINE" in content_item["text"]

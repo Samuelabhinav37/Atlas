@@ -2,6 +2,7 @@
 Atlas Python SDK: 1-Line Drop-in Runtime Security Guard for LangChain, CrewAI, AutoGen, and OpenAI.
 """
 
+import functools
 import inspect
 from collections.abc import Callable
 from typing import Any
@@ -36,12 +37,13 @@ class AtlasGuard:
         default_user_id: str = "default_user",
         default_agent_role: str = "analyst",
         enforce_step_up: bool = True,
+        default_scopes: list[str] | None = None,
     ):
         self.evaluator = PolicyEvaluator()
         self.scrubber = InterToolScrubber()
         self.injection_detector = PromptInjectionDetector()
         self.delegation_manager = AgentDelegationManager()
-        self.default_user = UserIdentity(user_id=default_user_id, scopes=["admin:all"])
+        self.default_user = UserIdentity(user_id=default_user_id, scopes=default_scopes or [])
         self.default_role = default_agent_role
         self.enforce_step_up = enforce_step_up
 
@@ -65,7 +67,7 @@ class AtlasGuard:
         Returns modified/hardened arguments (e.g. injected SQL LIMIT) if allowed,
         or raises SecurityViolationError if blocked.
         """
-        user = UserIdentity(user_id=user_id, scopes=["admin:all"]) if user_id else self.default_user
+        user = UserIdentity(user_id=user_id, scopes=self.default_user.scopes) if user_id else self.default_user
         agent = AgentIdentity(agent_id=agent_id, role=role or self.default_role)
         session = SessionState(session_id=session_id)
 
@@ -83,25 +85,41 @@ class AtlasGuard:
         # Return rewritten/hardened arguments if available
         return decision.modified_args if decision.modified_args else arguments
 
-    def sanitize_tool_return(self, tool_name: str, raw_output: str) -> str:
+    def sanitize_tool_return(self, tool_name: str, raw_output: Any) -> Any:
         """Sanitize tool return values before ingesting into LLM context."""
-        res = self.scrubber.scrub(tool_name=tool_name, raw_output=raw_output)
-        return res.sanitized_content
+        if isinstance(raw_output, str):
+            res = self.scrubber.scrub(tool_name=tool_name, raw_output=raw_output)
+            return res.sanitized_content
+        return raw_output
 
     def wrap_tool(self, tool_func: Callable, tool_name: str | None = None) -> Callable:
         """Decorator to wrap any Python tool function with runtime Atlas protection."""
         name = tool_name or tool_func.__name__
         sig = inspect.signature(tool_func)
 
-        def wrapper(*args, **kwargs):
-            bound_args = sig.bind(*args, **kwargs)
-            bound_args.apply_defaults()
-            evaluated_dict = dict(bound_args.arguments)
+        if inspect.iscoroutinefunction(tool_func):
+            @functools.wraps(tool_func)
+            async def async_wrapper(*args, **kwargs):
+                bound_args = sig.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                evaluated_dict = dict(bound_args.arguments)
 
-            hardened_dict = self.protect_call(tool_name=name, arguments=evaluated_dict)
+                hardened_dict = self.protect_call(tool_name=name, arguments=evaluated_dict)
 
-            # Call original function with hardened kwargs
-            raw_result = tool_func(**hardened_dict)
-            return self.sanitize_tool_return(name, str(raw_result))
+                # Call original function with hardened kwargs
+                raw_result = await tool_func(**hardened_dict)
+                return self.sanitize_tool_return(name, raw_result)
+            return async_wrapper
+        else:
+            @functools.wraps(tool_func)
+            def wrapper(*args, **kwargs):
+                bound_args = sig.bind(*args, **kwargs)
+                bound_args.apply_defaults()
+                evaluated_dict = dict(bound_args.arguments)
 
-        return wrapper
+                hardened_dict = self.protect_call(tool_name=name, arguments=evaluated_dict)
+
+                # Call original function with hardened kwargs
+                raw_result = tool_func(**hardened_dict)
+                return self.sanitize_tool_return(name, raw_result)
+            return wrapper

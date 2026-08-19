@@ -45,8 +45,25 @@ class AgentDelegationManager:
         current_depth: int = 1,
         ttl_seconds: int = 300,
         metadata: dict[str, Any] | None = None,
+        parent_token: str | None = None,
     ) -> str:
         """Create a signed, short-lived Agent Delegation Token (ADT)."""
+        # Enforce scope attenuation: child scopes must be subset of parent scopes
+        if parent_token:
+            try:
+                parent_data = json.loads(parent_token)
+                parent_scopes = set(parent_data.get("delegated_scopes", []))
+                requested_scopes = set(delegated_scopes)
+                # admin:all in parent permits any child scope
+                if "admin:all" not in parent_scopes:
+                    unauthorized = requested_scopes - parent_scopes
+                    if unauthorized:
+                        raise ValueError(
+                            f"Scope escalation denied: {unauthorized} not in parent scopes {parent_scopes}"
+                        )
+            except json.JSONDecodeError:
+                raise ValueError("Invalid parent delegation token format") from None
+
         now = int(time.time())
         token_data = {
             "token_id": f"adt_{secrets.token_hex(8)}",

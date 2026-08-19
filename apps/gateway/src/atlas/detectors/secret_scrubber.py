@@ -17,12 +17,17 @@ class SecretScrubber:
     """Detects and redacts credentials, private keys, API tokens, and PII."""
 
     SECRET_PATTERNS = [
-        ("openai_api_key", r"sk-[a-zA-Z0-9T3BlbkFJ]{20,48}"),
-        ("aws_access_key", r"AKIA[0-9A-Z]{16}"),
+        ("openai_api_key", r"sk-(?:proj-|admin-|svcacct-)?[a-zA-Z0-9_-]{20,200}"),
+        ("anthropic_api_key", r"sk-ant-[a-zA-Z0-9_-]{20,200}"),
+        ("aws_access_key", r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
         ("aws_secret_key", r"(?i)aws_secret_access_key\s*[:=]\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"),
+        ("gcp_api_key", r"AIza[0-9A-Za-z_-]{35}"),
         ("jwt_token", r"ey[A-Za-z0-9_-]{10,}\.ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
         ("github_token", r"gh[pousr]_[A-Za-z0-9_]{36,255}"),
-        ("ssh_private_key", r"-----BEGIN (RSA|OPENSSH|DSA|EC) PRIVATE KEY-----"),
+        ("github_fine_grained", r"github_pat_[A-Za-z0-9_]{22,255}"),
+        ("slack_token", r"xox[bpas]-[0-9A-Za-z-]{10,255}"),
+        ("ssh_private_key", r"(?s)-----BEGIN (?:RSA |OPENSSH |DSA |EC |ED25519 |ENCRYPTED )?PRIVATE KEY-----.*?-----END (?:RSA |OPENSSH |DSA |EC |ED25519 |ENCRYPTED )?PRIVATE KEY-----"),
+        ("database_url", r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s'\"]+:[^\s'\"]+@[^\s'\"]+"),
         ("generic_bearer", r"(?i)bearer\s+[A-Za-z0-9\-_=]{20,}"),
     ]
 

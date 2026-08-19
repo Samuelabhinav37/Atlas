@@ -501,6 +501,11 @@ async def serve_dashboard():
             safe_query: { role: 'analyst', tool: 'sql_query', args: '{"query": "SELECT id, name, email FROM customers WHERE active = true;"}' }
         };
 
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+        }
+
         function loadScenario() {
             const sc = scenarios[document.getElementById('sim-scenario').value];
             document.getElementById('sim-role').value = sc.role;
@@ -634,17 +639,17 @@ async def serve_dashboard():
                     card.className = `p-4 rounded-xl bg-slate-900/60 border ${borderCol} space-y-2 text-xs`;
                     card.innerHTML = `
                         <div class="flex items-center justify-between">
-                            <span class="px-2 py-0.5 rounded-full font-bold mono ${badgeCol}">${r.decision}</span>
-                            <span class="text-slate-500 mono">${r.timestamp ? r.timestamp.slice(11, 19) : ''}</span>
+                            <span class="px-2 py-0.5 rounded-full font-bold mono ${badgeCol}">${escapeHtml(r.decision)}</span>
+                            <span class="text-slate-500 mono">${r.timestamp ? escapeHtml(r.timestamp.slice(11, 19)) : ''}</span>
                         </div>
                         <div class="flex items-center justify-between text-slate-300">
-                            <span><strong class="text-white mono">${r.tool_name}</strong> by <em>${r.agent_id}</em></span>
-                            <span class="text-slate-400 mono">${r.policy_name}</span>
+                            <span><strong class="text-white mono">${escapeHtml(r.tool_name)}</strong> by <em>${escapeHtml(r.agent_id)}</em></span>
+                            <span class="text-slate-400 mono">${escapeHtml(r.policy_name)}</span>
                         </div>
-                        ${r.violation_reasons && r.violation_reasons.length > 0 ? `<div class="text-red-400/90">${r.violation_reasons[0]}</div>` : ''}
+                        ${r.violation_reasons && r.violation_reasons.length > 0 ? `<div class="text-red-400/90">${escapeHtml(r.violation_reasons[0])}</div>` : ''}
                         <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500 mono">
-                            <span>Hash: ${r.current_hash ? r.current_hash.slice(0, 12) : ''}...</span>
-                            ${r.taxonomy && r.taxonomy.atlas_technique ? `<span class="text-cyan-400">ATLAS ${r.taxonomy.atlas_technique}</span>` : ''}
+                            <span>Hash: ${r.current_hash ? escapeHtml(r.current_hash.slice(0, 12)) : ''}...</span>
+                            ${r.taxonomy && r.taxonomy.atlas_technique ? `<span class="text-cyan-400">ATLAS ${escapeHtml(r.taxonomy.atlas_technique)}</span>` : ''}
                         </div>
                     `;
                     feed.appendChild(card);
@@ -669,8 +674,8 @@ async def serve_dashboard():
                     row.className = 'p-4 rounded-xl bg-slate-900 border border-amber-500/40 flex flex-col md:flex-row md:items-center justify-between gap-3';
                     row.innerHTML = `
                         <div>
-                            <div class="text-sm font-bold text-white mono">${c.tool_name} (Agent: ${c.agent_id})</div>
-                            <div class="text-xs text-slate-400 mono mt-1">Args: ${JSON.stringify(c.arguments)}</div>
+                            <div class="text-sm font-bold text-white mono">${escapeHtml(c.tool_name)} (Agent: ${escapeHtml(c.agent_id)})</div>
+                            <div class="text-xs text-slate-400 mono mt-1">Args: ${escapeHtml(JSON.stringify(c.arguments))}</div>
                         </div>
                         <div class="flex items-center gap-2">
                             <button onclick="approveChallenge('${c.challenge_id}')" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition">

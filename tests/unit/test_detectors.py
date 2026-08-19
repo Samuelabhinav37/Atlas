@@ -57,4 +57,4 @@ def test_inter_tool_context_poisoning():
     assert res.quarantine is True
     assert res.atlas_id == "AML.T0054"
     assert res.owasp_id == "ASI06"
-    assert "ATLAS QUARANTINE WARNING" in res.sanitized_content
+    assert "ATLAS QUARANTINE" in res.sanitized_content

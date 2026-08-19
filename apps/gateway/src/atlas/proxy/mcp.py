@@ -100,6 +100,10 @@ class MCPProxyInterceptor:
             }
             return False, error_response
 
+        # Inject hardened/rewritten arguments back into the JSON-RPC message
+        if decision.modified_args:
+            json_rpc_msg.setdefault("params", {})["arguments"] = decision.modified_args
+
         return True, None
 
     def process_response(
