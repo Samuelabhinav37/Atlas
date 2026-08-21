@@ -68,18 +68,23 @@ class SQLSecurityRewriter:
                 except Exception:
                     pass
 
-            # 2. Inject Tenant Isolation Clause if tenant_id is specified
-            if tenant_id and parsed.find(exp.Table):
-                tenant_condition = exp.EQ(
-                    this=exp.Column(this=exp.to_identifier("tenant_id")),
-                    expression=exp.Literal.string(tenant_id),
-                )
-                existing_where = parsed.args.get("where")
-                if existing_where is None:
-                    parsed = parsed.where(tenant_condition)
-                else:
-                    parsed = parsed.where(tenant_condition, copy=False)
-                transformations.append(f"injected_tenant_isolation('{tenant_id}')")
+        # 2. Inject Tenant Isolation Clause if tenant_id is specified. This must
+        # cover mutating statements (UPDATE/DELETE), not just SELECT -- a tenant-
+        # scoped agent issuing a bare "DELETE FROM accounts;" with no WHERE clause
+        # is exactly the case tenant isolation exists to stop, and previously fell
+        # straight through this rewriter untouched because the check lived inside
+        # the `isinstance(parsed, exp.Select)` branch above.
+        if tenant_id and isinstance(parsed, (exp.Select, exp.Update, exp.Delete)) and parsed.find(exp.Table):
+            tenant_condition = exp.EQ(
+                this=exp.Column(this=exp.to_identifier("tenant_id")),
+                expression=exp.Literal.string(tenant_id),
+            )
+            existing_where = parsed.args.get("where")
+            if existing_where is None:
+                parsed = parsed.where(tenant_condition)
+            else:
+                parsed = parsed.where(tenant_condition, copy=False)
+            transformations.append(f"injected_tenant_isolation('{tenant_id}')")
 
         rewritten_sql = parsed.sql(dialect=dialect)
 

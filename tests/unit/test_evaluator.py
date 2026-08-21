@@ -150,6 +150,34 @@ def test_allowed_drop_table_by_admin_role():
     assert decision.outcome == DecisionOutcome.ALLOW
 
 
+def test_admin_bare_delete_gets_tenant_isolation_injected():
+    """Regression: SQLSecurityRewriter only injected the tenant_id WHERE filter
+    inside the `isinstance(parsed, exp.Select)` branch, so a mutating statement --
+    the one case tenant isolation exists to contain, since admin is the only role
+    permitted to run them -- passed through completely unmodified. A tenant-scoped
+    admin's bare 'DELETE FROM accounts;' (no WHERE clause) used to be allowed
+    through to the real downstream tool call exactly as written, wiping every
+    tenant's rows instead of just its own."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="root", scopes=["sql_query:execute"], tenant_id="tenant_42")
+    agent = AgentIdentity(agent_id="admin_1", role="admin")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={"query": "DELETE FROM accounts;"},
+        session=session,
+    )
+
+    assert decision.allowed is True
+    assert decision.outcome == DecisionOutcome.ALLOW
+    rewritten = decision.modified_args["query"]
+    assert "tenant_42" in rewritten
+    assert "WHERE" in rewritten
+
+
 def test_blocked_restricted_table():
     evaluator = PolicyEvaluator()
     user = UserIdentity(user_id="alice", scopes=["sql_query:execute"])
