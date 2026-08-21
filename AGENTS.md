@@ -47,14 +47,18 @@ client = OpenAI(
 ```
 
 ### Pattern B: Direct AuthZEN PEP Interception (LangChain / CrewAI / AutoGen)
-Call `/v1/agent/evaluate` before executing any tool in your custom runtime:
+Call `/v1/agent/evaluate` before executing any tool in your custom runtime. The caller's
+identity and scopes come only from a verified bearer token — never from the request body,
+since a self-reported `user` object would let any caller grant itself arbitrary scopes.
+Issue tokens with `atlas.auth.tokens.issue_user_token` (server-side, using the same
+`ATLAS_JWT_SECRET` the gateway verifies against), then send the token as a header:
 ```python
 import httpx
 
 response = httpx.post(
     "http://localhost:8000/v1/agent/evaluate",
+    headers={"Authorization": f"Bearer {user_token}"},
     json={
-        "user": {"user_id": "sam", "scopes": ["sql_query:execute"]},
         "agent": {"agent_id": "sql_bot", "role": "analyst"},
         "tool": "sql_query",
         "arguments": {"query": "SELECT * FROM sales;"},

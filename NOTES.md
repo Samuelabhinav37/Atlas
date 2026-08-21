@@ -68,11 +68,22 @@ Every major security framework describes or tests AI systems, but **none enforce
 
 ---
 
+### Error 6: `/v1/agent/evaluate` and Step-Up Approval Trusted Self-Reported Identity
+* **Symptom**: Any caller could POST `{"user": {"scopes": ["admin:all"]}, ...}` to `/v1/agent/evaluate` and be evaluated as an admin, and anyone who triggered a Step-Up challenge could immediately approve their own request via `/v1/auth/step-up/approve/{id}` by supplying any `approver_id` string.
+* **Root Cause**: `user` identity/scopes and `approver_id` came directly from the client-supplied JSON body, with no verification the caller actually held that identity.
+* **Fix**: Added `apps/gateway/src/atlas/auth/tokens.py` (JWT issue/verify via `pyjwt`, which was already a declared dependency but unused). `/v1/agent/evaluate` now derives `user` only from a verified `Authorization: Bearer` token (`get_verified_user` dependency); step-up approve/reject require the verified caller to hold a `step_up:approve` scope (`require_step_up_approver`). Requires `ATLAS_JWT_SECRET` to be set — the gateway refuses a default or generated signing key. The dashboard mints itself a short-lived operator-scoped demo token server-side for its own same-origin fetch calls.
+
+---
+
 ## 3. How to Run & Use Atlas
 
 ### Method A: Start Gateway & Visual Dashboard
+`/v1/agent/evaluate` and the step-up approval endpoints require a signed bearer token
+(see `atlas.auth.tokens`), so `ATLAS_JWT_SECRET` must be set before the dashboard's
+simulator/approval buttons will work:
 ```powershell
 # In terminal:
+$env:ATLAS_JWT_SECRET = python -c "import secrets; print(secrets.token_hex(32))"
 python -m atlas.cli serve --host 127.0.0.1 --port 8000
 ```
 Open **[http://localhost:8000/dashboard](http://localhost:8000/dashboard)** in your browser for the real-time visual control plane, live attack simulator, HITL approval queue, and audit feed.
@@ -137,6 +148,7 @@ python -m atlas.cli mcp-eval sql_query '{"query": "DROP TABLE users;"}' --role a
 | **Shell AST Inspector** | `atlas.engine.shell_inspector` | Bashlex AST tree walker for RCE & reverse shells |
 | **SQL Security Rewriter** | `atlas.engine.sql_rewriter` | SQLGlot AST query limiter & tenant isolation |
 | **Multi-Agent ADT** | `atlas.auth.delegation` | HMAC-signed delegation tokens & cascade breakers |
+| **Bearer Token Identity** | `atlas.auth.tokens` | JWT issue/verify; sole source of caller identity/scopes for `/v1/agent/evaluate` |
 | **HITL Step-Up Auth** | `atlas.auth.step_up` | Asynchronous human approval manager with UI buttons |
 | **Cryptographic Ledger** | `atlas.audit.ledger` | SHA-256 hash-chained tamper-evident JSONL trail |
 | **Red-Team Fuzzer** | `atlas.redteam.fuzzer` | 20-probe dynamic mutation security score (100.0%) |

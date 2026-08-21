@@ -131,7 +131,10 @@ pip install -e ".[dev]"
 ```
 
 ### 2. Start the Control Plane Gateway & Visual Dashboard
+`/v1/agent/evaluate` and the step-up approval endpoints require a signed bearer
+token; the gateway refuses to start those checks without a signing secret configured:
 ```bash
+export ATLAS_JWT_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
 python -m atlas.cli serve --host 127.0.0.1 --port 8000
 # Open your browser: http://localhost:8000/dashboard
 ```

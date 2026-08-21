@@ -11,6 +11,7 @@ from typing import Any
 from atlas.audit.ledger import AuditLedger
 from atlas.auth.delegation import AgentDelegationManager
 from atlas.auth.step_up import StepUpAuthManager
+from atlas.auth.tokens import InvalidTokenError, issue_user_token, verify_user_token
 from atlas.detectors.canary import CanaryTrapEngine
 from atlas.detectors.inter_tool_scrubber import InterToolScrubber
 from atlas.detectors.prompt_injection import PromptInjectionDetector
@@ -22,8 +23,9 @@ from atlas.models import (
     UserIdentity,
 )
 from atlas.telemetry.mapper import taxonomy_mapper
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 app = FastAPI(
@@ -41,9 +43,35 @@ canary_engine = CanaryTrapEngine()
 step_up_manager = StepUpAuthManager()
 delegation_manager = AgentDelegationManager()
 
+_bearer_scheme = HTTPBearer(auto_error=True)
+
+
+async def get_verified_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+) -> UserIdentity:
+    """Derive the caller's identity and scopes from a verified bearer token.
+
+    This must be the only source of truth for who is calling and what they're
+    allowed to do -- endpoints that grant authorization decisions must never trust
+    an identity/scopes object supplied directly in the request body, since that
+    lets any caller self-grant arbitrary privileges.
+    """
+    try:
+        return verify_user_token(credentials.credentials)
+    except InvalidTokenError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid or expired token: {e}") from e
+
+
+async def require_step_up_approver(
+    user: UserIdentity = Depends(get_verified_user),
+) -> UserIdentity:
+    """Require the verified caller to hold the step_up:approve (or admin:all) scope."""
+    if "step_up:approve" not in user.scopes and "admin:all" not in user.scopes:
+        raise HTTPException(status_code=403, detail="Caller lacks required scope: step_up:approve")
+    return user
+
 
 class EvaluateToolRequest(BaseModel):
-    user: UserIdentity
     agent: AgentIdentity
     tool: str
     arguments: dict[str, Any] = Field(default_factory=dict)
@@ -59,10 +87,6 @@ class DelegateTaskRequest(BaseModel):
     delegated_scopes: list[str]
     current_depth: int = 1
     ttl_seconds: int = 300
-
-
-class StepUpActionRequest(BaseModel):
-    approver_id: str = "security_lead"
 
 
 class ScrubContentRequest(BaseModel):
@@ -109,8 +133,13 @@ async def issue_delegation_envelope(req: DelegateTaskRequest):
 
 
 @app.post("/v1/agent/evaluate")
-async def evaluate_action(req: EvaluateToolRequest):
-    """Direct AuthZEN PEP Endpoint: Evaluates whether an agent can invoke a tool with specific arguments."""
+async def evaluate_action(req: EvaluateToolRequest, user: UserIdentity = Depends(get_verified_user)):
+    """Direct AuthZEN PEP Endpoint: Evaluates whether an agent can invoke a tool with specific arguments.
+
+    `user` identity and scopes come only from the verified bearer token, never from
+    the request body -- a caller cannot self-report the privileges it is evaluated
+    against.
+    """
     trace_id = req.trace_id or f"tr_{secrets.token_hex(6)}"
 
     # If an Agent Delegation Token is supplied, verify it first
@@ -124,8 +153,8 @@ async def evaluate_action(req: EvaluateToolRequest):
         if not del_res.is_valid:
             audit_ledger.record_decision(
                 trace_id=trace_id,
-                user_id=req.user.user_id,
-                tenant_id=req.user.tenant_id,
+                user_id=user.user_id,
+                tenant_id=user.tenant_id,
                 agent_id=req.agent.agent_id,
                 agent_role=req.agent.role,
                 tool_name=req.tool,
@@ -144,7 +173,7 @@ async def evaluate_action(req: EvaluateToolRequest):
             }
 
     decision = evaluator.evaluate_tool_call(
-        user=req.user,
+        user=user,
         agent=req.agent,
         tool=req.tool,
         args=req.arguments,
@@ -155,7 +184,7 @@ async def evaluate_action(req: EvaluateToolRequest):
     if decision.outcome == DecisionOutcome.STEP_UP_REQUIRED:
         challenge = step_up_manager.create_challenge(
             trace_id=trace_id,
-            user_id=req.user.user_id,
+            user_id=user.user_id,
             agent_id=req.agent.agent_id,
             tool_name=req.tool,
             arguments=req.arguments,
@@ -165,8 +194,8 @@ async def evaluate_action(req: EvaluateToolRequest):
     # Record verified receipt in cryptographic audit ledger
     receipt = audit_ledger.record_decision(
         trace_id=trace_id,
-        user_id=req.user.user_id,
-        tenant_id=req.user.tenant_id,
+        user_id=user.user_id,
+        tenant_id=user.tenant_id,
         agent_id=req.agent.agent_id,
         agent_role=req.agent.role,
         tool_name=req.tool,
@@ -197,21 +226,30 @@ async def list_pending_step_up():
 
 
 @app.post("/v1/auth/step-up/approve/{challenge_id}")
-async def approve_step_up_challenge(challenge_id: str, req: StepUpActionRequest):
-    """Approve a pending human approval challenge."""
-    success = step_up_manager.approve_challenge(challenge_id, req.approver_id)
+async def approve_step_up_challenge(
+    challenge_id: str, approver: UserIdentity = Depends(require_step_up_approver)
+):
+    """Approve a pending human approval challenge.
+
+    The approver identity comes only from a verified bearer token holding the
+    step_up:approve scope -- the caller that triggered the challenge cannot
+    self-approve it by supplying an approver name in the request body.
+    """
+    success = step_up_manager.approve_challenge(challenge_id, approver.user_id)
     if not success:
         raise HTTPException(status_code=404, detail="Challenge not found or not pending")
-    return {"challenge_id": challenge_id, "status": "APPROVED", "approver": req.approver_id}
+    return {"challenge_id": challenge_id, "status": "APPROVED", "approver": approver.user_id}
 
 
 @app.post("/v1/auth/step-up/reject/{challenge_id}")
-async def reject_step_up_challenge(challenge_id: str, req: StepUpActionRequest):
+async def reject_step_up_challenge(
+    challenge_id: str, approver: UserIdentity = Depends(require_step_up_approver)
+):
     """Reject a pending human approval challenge."""
-    success = step_up_manager.reject_challenge(challenge_id, req.approver_id)
+    success = step_up_manager.reject_challenge(challenge_id, approver.user_id)
     if not success:
         raise HTTPException(status_code=404, detail="Challenge not found or not pending")
-    return {"challenge_id": challenge_id, "status": "REJECTED", "approver": req.approver_id}
+    return {"challenge_id": challenge_id, "status": "REJECTED", "approver": approver.user_id}
 
 
 @app.post("/v1/agent/scrub")
@@ -335,8 +373,26 @@ async def get_taxonomy():
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def serve_dashboard():
-    """Serve the Atlas Real-Time Visual Observability Dashboard."""
-    return """
+    """Serve the Atlas Real-Time Visual Observability Dashboard.
+
+    The dashboard is a same-origin operator console, so the server mints itself a
+    short-lived demo token here (scoped to the simulator's own tool calls plus
+    step_up:approve) and embeds it in the page for its own fetch() calls to use --
+    it is not a route any other caller can use to obtain privileges.
+    """
+    dashboard_token = issue_user_token(
+        user_id="dashboard_operator",
+        scopes=[
+            "sql_query:execute",
+            "read_file:execute",
+            "fetch_url:execute",
+            "execute_command:execute",
+            "execute_payment:execute",
+            "step_up:approve",
+        ],
+        ttl_seconds=3600,
+    )
+    html = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -491,6 +547,7 @@ async def serve_dashboard():
     </div>
 
     <script>
+        const ATLAS_DASHBOARD_TOKEN = "__ATLAS_DASHBOARD_TOKEN__";
         const scenarios = {
             sql_drop: { role: 'analyst', tool: 'sql_query', args: '{"query": "DROP TABLE users;"}' },
             sql_creds: { role: 'analyst', tool: 'sql_query', args: '{"query": "SELECT password_hash FROM credentials WHERE id=1;"}' },
@@ -519,7 +576,6 @@ async def serve_dashboard():
             catch(e) { alert("Invalid JSON in arguments"); return; }
 
             const payload = {
-                user: { user_id: 'samuel_interactive', scopes: ['sql_query:execute', 'read_file:execute', 'fetch_url:execute', 'execute_command:execute'] },
                 agent: { agent_id: 'agent_interactive', role: document.getElementById('sim-role').value },
                 tool: document.getElementById('sim-tool').value,
                 arguments: args,
@@ -528,7 +584,7 @@ async def serve_dashboard():
 
             const res = await fetch('/v1/agent/evaluate', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + ATLAS_DASHBOARD_TOKEN },
                 body: JSON.stringify(payload)
             });
             const data = await res.json();
@@ -580,8 +636,7 @@ async def serve_dashboard():
         async function approveChallenge(cid) {
             await fetch(`/v1/auth/step-up/approve/${cid}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ approver_id: 'admin_dashboard' })
+                headers: { 'Authorization': 'Bearer ' + ATLAS_DASHBOARD_TOKEN }
             });
             await refreshData();
         }
@@ -589,8 +644,7 @@ async def serve_dashboard():
         async function rejectChallenge(cid) {
             await fetch(`/v1/auth/step-up/reject/${cid}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ approver_id: 'admin_dashboard' })
+                headers: { 'Authorization': 'Bearer ' + ATLAS_DASHBOARD_TOKEN }
             });
             await refreshData();
         }
@@ -700,3 +754,4 @@ async def serve_dashboard():
 </body>
 </html>
     """
+    return html.replace("__ATLAS_DASHBOARD_TOKEN__", dashboard_token)

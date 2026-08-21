@@ -9,6 +9,10 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - ATLAS_WORKSPACE_ROOT=/workspace
+      # Required for /v1/agent/evaluate and step-up approval to work -- generate your
+      # own with `python -c "import secrets; print(secrets.token_hex(32))"` and set it
+      # in the environment (e.g. via `docker compose --env-file`), don't commit a real one.
+      - ATLAS_JWT_SECRET=${ATLAS_JWT_SECRET:?ATLAS_JWT_SECRET must be set}
     volumes:
       - ./policies:/policies:ro
       - ./taxonomy:/taxonomy:ro

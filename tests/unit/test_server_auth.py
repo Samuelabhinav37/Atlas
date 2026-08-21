@@ -1,0 +1,93 @@
+"""
+Tests for bearer-token authentication on the Atlas gateway.
+
+/v1/agent/evaluate and the step-up approval endpoints must derive identity and
+scopes only from a verified bearer token, never from the request body -- these
+tests exist to catch a regression back to trusting client-supplied identity.
+"""
+
+import os
+
+os.environ.setdefault("ATLAS_JWT_SECRET", "test-secret-for-unit-tests-only-32bytes-min")
+
+from atlas.auth.tokens import issue_user_token  # noqa: E402
+from atlas.proxy.server import app  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+client = TestClient(app)
+
+_EVAL_BODY = {
+    "agent": {"agent_id": "agent_1", "role": "analyst"},
+    "tool": "sql_query",
+    "arguments": {"query": "SELECT 1"},
+}
+
+
+def _auth(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_evaluate_rejects_missing_token():
+    resp = client.post("/v1/agent/evaluate", json=_EVAL_BODY)
+    assert resp.status_code in (401, 403)
+
+
+def test_evaluate_rejects_garbage_token():
+    resp = client.post("/v1/agent/evaluate", json=_EVAL_BODY, headers=_auth("not-a-real-jwt"))
+    assert resp.status_code == 401
+
+
+def test_evaluate_cannot_self_grant_scope_via_body():
+    """A caller with no granted scopes must be denied even though older clients
+    might still send a `user` field in the body -- extra fields are ignored, and
+    the decision is made against the verified token's scopes only."""
+    token = issue_user_token(user_id="attacker", scopes=[])
+    body = {**_EVAL_BODY, "user": {"user_id": "attacker", "scopes": ["admin:all"]}}
+    resp = client.post("/v1/agent/evaluate", json=body, headers=_auth(token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["allowed"] is False
+    assert data["receipt"]["user_id"] == "attacker"
+
+
+def test_evaluate_allows_with_verified_scope():
+    token = issue_user_token(user_id="analyst_bob", scopes=["sql_query:execute"])
+    resp = client.post("/v1/agent/evaluate", json=_EVAL_BODY, headers=_auth(token))
+    assert resp.status_code == 200
+    assert resp.json()["allowed"] is True
+
+
+def test_step_up_approve_requires_authorized_scope():
+    """A caller who triggers a step-up challenge cannot immediately self-approve it
+    by hitting the approve endpoint without the step_up:approve scope."""
+    trigger_token = issue_user_token(user_id="finance_user", scopes=["execute_payment:execute"])
+    eval_resp = client.post(
+        "/v1/agent/evaluate",
+        json={
+            "agent": {"agent_id": "payroll_bot", "role": "operator"},
+            "tool": "execute_payment",
+            "arguments": {"amount": 50000, "recipient": "vendor_corp"},
+            "session": {"session_id": "sess_stepup_test", "step_up_approved": False},
+        },
+        headers=_auth(trigger_token),
+    )
+    assert eval_resp.status_code == 200
+    challenge_id = eval_resp.json()["challenge_id"]
+    assert challenge_id
+
+    # The same caller, without step_up:approve, cannot approve its own challenge.
+    resp = client.post(f"/v1/auth/step-up/approve/{challenge_id}", headers=_auth(trigger_token))
+    assert resp.status_code == 403
+
+    # A caller with step_up:approve can.
+    approver_token = issue_user_token(user_id="security_lead", scopes=["step_up:approve"])
+    resp = client.post(f"/v1/auth/step-up/approve/{challenge_id}", headers=_auth(approver_token))
+    assert resp.status_code == 200
+    assert resp.json()["approver"] == "security_lead"
+
+
+def test_dashboard_embeds_a_real_token_not_the_placeholder():
+    resp = client.get("/dashboard")
+    assert resp.status_code == 200
+    assert "__ATLAS_DASHBOARD_TOKEN__" not in resp.text
+    assert "ATLAS_DASHBOARD_TOKEN" in resp.text
