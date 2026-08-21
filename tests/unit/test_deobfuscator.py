@@ -44,6 +44,22 @@ def test_base64_decoding_without_padding_or_keyword_hint():
     assert "cat /etc/shadow" in res.normalized_text
 
 
+def test_ordinary_identifier_not_corrupted_by_base64_false_positive():
+    """Regression: the base64 content-validity filter accepted any Unicode
+    "alpha" character (not just ASCII) with only a 3-character decoded-length
+    floor. "financia" -- a substring of the ordinary identifier
+    "financial_reports", split off at the underscore -- happens to be valid
+    base64 that decodes to 4 garbage bytes which are technically "printable"
+    and "alpha" (they land on Arabic/Latin-Extended letters), so a real SQL
+    query referencing a table named financial_reports got silently corrupted
+    into garbage before being parsed/executed."""
+    deob = RecursiveDeobfuscator()
+    query = "SELECT revenue, quarter FROM financial_reports WHERE quarter = 'Q3';"
+    res = deob.normalize(query)
+    assert res.normalized_text == query
+    assert res.is_obfuscated is False
+
+
 def test_zero_width_char_stripping():
     """Regression: NFKC normalization does not remove zero-width/invisible
     Unicode format characters (Cf category) like U+200B ZERO WIDTH SPACE --
