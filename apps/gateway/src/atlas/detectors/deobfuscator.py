@@ -53,27 +53,31 @@ class RecursiveDeobfuscator:
                 unpacked_layers.append("url_decode")
                 changed = True
 
-            # 3. Base64 Decoding (Only when triggered by base64 keywords or valid padded/alphanumeric payload)
-            has_base64_hint = bool(re.search(r"(?i)\b(base64|b64|decode)\b", current))
+            # 3. Base64 Decoding
+            # Every regex match is attempted regardless of padding or nearby keywords --
+            # gating on `match.endswith("=")` missed any payload whose byte length is a
+            # multiple of 3 (no padding needed), and gating on a "base64"/"b64"/"decode"
+            # keyword is trivial for an attacker to simply not include. Precision instead
+            # comes from the content-validity filter below: decoding arbitrary non-base64
+            # text as base64 overwhelmingly produces non-printable garbage, which is
+            # rejected before the replacement is ever applied.
             b64_matches = self.BASE64_CANDIDATE_REGEX.findall(current)
 
             for match in b64_matches:
-                # Require explicit padding '=' OR presence of base64 command hint
-                if match.endswith("=") or has_base64_hint:
-                    try:
-                        decoded_bytes = base64.b64decode(match, validate=True)
-                        decoded_str = decoded_bytes.decode("utf-8")
-                        # Must be printable ASCII text
-                        if (
-                            len(decoded_str) >= 3
-                            and all(c.isprintable() or c in "\n\r\t" for c in decoded_str)
-                            and any(c.isalpha() for c in decoded_str)
-                        ):
-                            current = current.replace(match, decoded_str, 1)
-                            unpacked_layers.append(f"base64_decode({match[:8]}...)")
-                            changed = True
-                    except (binascii.Error, UnicodeDecodeError):
-                        pass
+                try:
+                    decoded_bytes = base64.b64decode(match, validate=True)
+                    decoded_str = decoded_bytes.decode("utf-8")
+                    # Must be printable ASCII text
+                    if (
+                        len(decoded_str) >= 3
+                        and all(c.isprintable() or c in "\n\r\t" for c in decoded_str)
+                        and any(c.isalpha() for c in decoded_str)
+                    ):
+                        current = current.replace(match, decoded_str, 1)
+                        unpacked_layers.append(f"base64_decode({match[:8]}...)")
+                        changed = True
+                except (binascii.Error, UnicodeDecodeError):
+                    pass
 
             # 4. Hex Escaped Decoding (e.g. \x2e\x2e\x2f -> ../)
             if "\\x" in current or "\\X" in current:

@@ -30,6 +30,20 @@ def test_base64_embedded_decoding():
     assert "rm -rf /" in res.normalized_text
 
 
+def test_base64_decoding_without_padding_or_keyword_hint():
+    """A base64 payload whose byte length is a multiple of 3 needs no '=' padding,
+    and an attacker simply won't include the literal word "base64"/"b64"/"decode" --
+    both were previously required for decoding to trigger at all, so a payload like
+    this sailed through completely undecoded."""
+    deob = RecursiveDeobfuscator()
+    # "Y2F0IC9ldGMvc2hhZG93" is "cat /etc/shadow" -- 15 bytes (a multiple of 3), so
+    # no padding is needed, and the surrounding text has no base64/b64/decode hint.
+    obfuscated = "Y2F0IC9ldGMvc2hhZG93"
+    res = deob.normalize(obfuscated)
+    assert res.is_obfuscated is True
+    assert "cat /etc/shadow" in res.normalized_text
+
+
 def test_clean_input_no_mutation():
     deob = RecursiveDeobfuscator()
     clean = "SELECT id, name FROM users WHERE active = true"

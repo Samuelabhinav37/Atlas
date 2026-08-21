@@ -143,6 +143,31 @@ def test_blocked_absolute_path_etc_passwd():
     assert decision.outcome == DecisionOutcome.DENY
 
 
+def test_blocked_unpadded_base64_obfuscated_sensitive_file():
+    """Regression: a base64-encoded sensitive filename with no '=' padding and no
+    base64/b64/decode hint nearby must still be de-obfuscated and caught."""
+    import base64
+
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="bob", scopes=["read_file:execute"])
+    agent = AgentIdentity(agent_id="reader_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    encoded = base64.b64encode(b"id_rsa").decode()
+    assert not encoded.endswith("="), "test payload must be unpadded to exercise the bug"
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="read_file",
+        args={"path": encoded},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+
+
 def test_blocked_absolute_path_windows():
     """Phase 1.1: Windows absolute path outside sandbox must be blocked."""
     evaluator = PolicyEvaluator()
