@@ -89,6 +89,18 @@ _BLOCKED_HOSTNAMES = {
 _METADATA_IP_RE = re.compile(r"169\.254\.169\.254|169\.254\.169\.253")
 
 
+def _is_absolute_any_flavor(path_str: str) -> bool:
+    """Detect whether a path string is absolute in either POSIX or Windows syntax.
+
+    Deliberately independent of the host OS: a Windows-style path like
+    'C:\\Windows\\System32' must be recognized as absolute even when Atlas runs on
+    Linux, and a POSIX path like '/etc/passwd' must be recognized as absolute even
+    when Atlas runs on Windows. Using the stdlib `os.path.isabs` here would only
+    apply the host OS's own rules and let the other flavor slip through.
+    """
+    return PureWindowsPath(path_str).is_absolute() or PurePosixPath(path_str).is_absolute()
+
+
 def _is_private_or_reserved(hostname: str) -> bool:
     """Check if a hostname resolves to a private/reserved IP address."""
     # Check blocked hostnames
@@ -112,8 +124,11 @@ def _is_private_or_reserved(hostname: str) -> bool:
 class PolicyEvaluator:
     """Evaluates agent tool requests against authorization policies, AST inspectors, and auto-rewriters."""
 
-    def __init__(self, workspace_root: str = "C:/Users/samue"):
-        self.workspace_root = os.path.normpath(workspace_root)
+    def __init__(self, workspace_root: str | None = None):
+        # No sensible cross-machine default exists for a sandbox root, so fall back
+        # to an explicit env var and then the current working directory rather than
+        # hardcoding any one deployment's path.
+        self.workspace_root = workspace_root or os.environ.get("ATLAS_WORKSPACE_ROOT") or os.getcwd()
         self.deobfuscator = RecursiveDeobfuscator()
         self.shell_inspector = ShellASTInspector()
         self.sql_rewriter = SQLSecurityRewriter(default_limit=100)
@@ -122,40 +137,35 @@ class PolicyEvaluator:
     def _is_path_in_sandbox(self, path_str: str) -> bool:
         """Check if a path is contained within the workspace_root sandbox.
 
-        Uses both PurePosixPath and PureWindowsPath to handle cross-platform paths.
+        Path "flavor" (POSIX vs Windows) is determined from the string itself,
+        not the host OS, so containment decisions are identical whether Atlas
+        is deployed on Linux or Windows.
         """
-        # Normalize the path
-        normalized = os.path.normpath(path_str)
+        windows_abs = PureWindowsPath(path_str).is_absolute()
+        posix_abs = PurePosixPath(path_str).is_absolute()
 
-        # If it's an absolute path, check containment directly
-        if os.path.isabs(normalized):
-            # Check if it starts with workspace root
-            ws_root = self.workspace_root
-            try:
-                # Use os.path.commonpath to check containment
-                common = os.path.commonpath([ws_root, normalized])
-                return os.path.normpath(common) == os.path.normpath(ws_root)
-            except ValueError:
-                # Different drives on Windows
-                return False
+        if windows_abs or posix_abs:
+            candidates = []
+            if windows_abs:
+                candidates.append((PureWindowsPath(path_str), PureWindowsPath(self.workspace_root)))
+            if posix_abs:
+                candidates.append((PurePosixPath(path_str), PurePosixPath(self.workspace_root)))
 
-        # For relative paths, resolve against workspace root and check
-        # Also check for traversal
+            for candidate, root in candidates:
+                try:
+                    candidate.relative_to(root)
+                    return True
+                except ValueError:
+                    continue
+            return False
+
+        # Relative path: resolve against workspace root and check containment.
+        # Traversal segments ("..") are already rejected by the caller before
+        # this is reached, so a plain prefix join is sufficient here.
         try:
-            # Try PurePosixPath
-            resolved = PurePosixPath(self.workspace_root) / PurePosixPath(path_str)
-            resolved_str = os.path.normpath(str(resolved))
-            common = os.path.commonpath([self.workspace_root, resolved_str])
-            return os.path.normpath(common) == os.path.normpath(self.workspace_root)
-        except (ValueError, TypeError):
-            pass
-
-        try:
-            # Try PureWindowsPath
-            resolved = PureWindowsPath(self.workspace_root) / PureWindowsPath(path_str)
-            resolved_str = os.path.normpath(str(resolved))
-            common = os.path.commonpath([self.workspace_root, resolved_str])
-            return os.path.normpath(common) == os.path.normpath(self.workspace_root)
+            resolved = PurePosixPath(self.workspace_root) / path_str
+            resolved.relative_to(PurePosixPath(self.workspace_root))
+            return True
         except (ValueError, TypeError):
             return False
 
@@ -456,7 +466,7 @@ class PolicyEvaluator:
                     )
 
                 # Sandbox containment: absolute paths must be under workspace_root
-                if os.path.isabs(deob_path) and not self._is_path_in_sandbox(deob_path):
+                if _is_absolute_any_flavor(deob_path) and not self._is_path_in_sandbox(deob_path):
                     mapping = taxonomy_mapper.enrich(
                         atlas_id="AML.T0086",
                         owasp_id="ASI05",

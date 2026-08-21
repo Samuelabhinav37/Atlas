@@ -183,11 +183,11 @@ def benchmark():
     ]
 
     table = Table(title="Atlas Adversarial Benchmark Results")
-    table.add_column("Scenario", style="cyan", no_wrap=True)
+    table.add_column("Scenario", style="cyan")
     table.add_column("Decision", style="bold")
     table.add_column("ATLAS Technique", style="yellow")
     table.add_column("OWASP Risk", style="magenta")
-    table.add_column("Policy / Reason", style="white")
+    table.add_column("Policy / Reason", style="white", overflow="fold")
 
     for sc in scenarios:
         decision = evaluator.evaluate_tool_call(
