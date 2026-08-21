@@ -93,3 +93,70 @@ def test_tampering_detection(tmp_path: Path):
     valid, count, msg = ledger.verify_ledger()
     assert valid is False
     assert "Tampering detected" in msg or "Hash mismatch" in msg
+
+
+def test_tail_truncation_detected_via_checkpoint(tmp_path: Path):
+    """Regression: a file truncated to drop its most recent entries is still a
+    perfectly valid, self-consistent hash chain from genesis to wherever it was
+    cut -- the forward walk alone cannot detect this. The sidecar checkpoint must."""
+    log_file = tmp_path / "test_audit_truncated.jsonl"
+    ledger = AuditLedger(log_file=log_file)
+
+    for i in range(5):
+        ledger.record_decision(
+            trace_id=f"tr_{i}",
+            user_id="user_1",
+            tenant_id="tenant_a",
+            agent_id="agent_1",
+            agent_role="analyst",
+            tool_name="sql_query",
+            arguments={"query": f"SELECT {i}"},
+            decision=DecisionOutcome.ALLOW,
+            policy_name="atlas.authz.allow",
+        )
+
+    valid, count, msg = ledger.verify_ledger()
+    assert valid is True
+    assert count == 5
+
+    # Drop the last 2 receipts. The remaining 3 lines are still an internally
+    # consistent chain starting from genesis.
+    with open(log_file, encoding="utf-8") as f:
+        lines = f.readlines()
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.writelines(lines[:3])
+
+    # Simulate a fresh process (e.g. `atlas verify-audit`) reading the tampered file.
+    reloaded = AuditLedger(log_file=log_file)
+    valid, count, msg = reloaded.verify_ledger()
+    assert valid is False
+    assert "tampering" in msg.lower() or "deleted" in msg.lower()
+
+
+def test_signed_checkpoint_rejects_forged_checkpoint(tmp_path: Path, monkeypatch):
+    """With ATLAS_AUDIT_HMAC_SECRET set, an attacker with filesystem write access to
+    both files but not the secret cannot forge a checkpoint that passes verification."""
+    monkeypatch.setenv("ATLAS_AUDIT_HMAC_SECRET", "test-secret-for-unit-tests-only")
+    log_file = tmp_path / "test_audit_signed.jsonl"
+    ledger = AuditLedger(log_file=log_file)
+    ledger.record_decision(
+        trace_id="tr_1",
+        user_id="u",
+        tenant_id="t",
+        agent_id="a",
+        agent_role="analyst",
+        tool_name="sql_query",
+        arguments={"query": "SELECT 1"},
+        decision=DecisionOutcome.ALLOW,
+        policy_name="atlas.authz.allow",
+    )
+    valid, _, _ = ledger.verify_ledger()
+    assert valid is True
+
+    forged = {"last_hash": ledger._last_hash, "count": ledger._count, "hmac": "0" * 64}
+    with open(str(log_file) + ".checkpoint", "w", encoding="utf-8") as f:
+        json.dump(forged, f)
+
+    valid, _, msg = ledger.verify_ledger()
+    assert valid is False
+    assert "signature" in msg.lower()

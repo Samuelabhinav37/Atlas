@@ -111,7 +111,7 @@ Real agent exploits occur when external data sources (Jira, RAG documents, web p
 ### 4. Tamper-Evident Cryptographic Audit Ledger
 Every single policy decision and tool invocation is recorded into an append-only, SHA-256 hash-chained JSONL ledger:
 $$\text{Hash}_N = \text{SHA256}(\text{Hash}_{N-1} \parallel \text{CanonicalJSON}(\text{Receipt}_N))$$
-Any modification or deletion breaks the hash chain and is immediately flagged by `atlas verify-audit`.
+In-place modification of an entry breaks the hash chain. Deleting entries from the *end* of the file would otherwise leave a perfectly valid chain from genesis to wherever it was cut, so every write also updates a small sidecar checkpoint (`<ledger>.jsonl.checkpoint`) recording the expected final hash and receipt count; `atlas verify-audit` cross-checks the ledger against it. Set `ATLAS_AUDIT_HMAC_SECRET` to have the checkpoint itself HMAC-signed, so forging a matching checkpoint requires the secret, not just filesystem write access to the ledger directory.
 
 ### 5. Direct Threat Taxonomy Mapping
 Every violation automatically attaches machine-readable framework metadata:

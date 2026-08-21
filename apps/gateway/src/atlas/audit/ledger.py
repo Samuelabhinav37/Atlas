@@ -3,7 +3,9 @@ Tamper-evident, hash-chained cryptographic audit ledger for AI agent decisions.
 """
 
 import hashlib
+import hmac
 import json
+import os
 import secrets
 from pathlib import Path
 from typing import Any
@@ -12,30 +14,61 @@ from atlas.models import AuditReceipt, DecisionOutcome, SecurityTaxonomyMapping
 
 
 class AuditLedger:
-    """Maintains a cryptographically verifiable append-only ledger of agent actions and policy decisions."""
+    """Maintains a cryptographically verifiable append-only ledger of agent actions and policy decisions.
+
+    The forward hash chain alone only proves internal self-consistency of whatever
+    lines are currently in the log file -- a file truncated to drop its most recent
+    entries is still a perfectly valid chain from genesis to wherever it was cut, so
+    truncation is otherwise completely undetectable. A small sidecar checkpoint file
+    (last_hash + count, written on every append) closes that gap: verify_ledger()
+    cross-checks the log file's actual tail against it. If ATLAS_AUDIT_HMAC_SECRET is
+    set, the checkpoint is HMAC-signed, so forging a matching checkpoint requires the
+    secret, not just filesystem write access.
+    """
 
     def __init__(self, log_file: Path | str = "atlas_audit.jsonl"):
         self.log_file = Path(log_file)
+        self.checkpoint_file = Path(str(self.log_file) + ".checkpoint")
         self.genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
-        self._last_hash = self._get_latest_hash()
+        self._hmac_key = os.environ.get("ATLAS_AUDIT_HMAC_SECRET")
+        self._last_hash, self._count = self._get_latest_state()
 
-    def _get_latest_hash(self) -> str:
-        """Read the last hash from disk or return genesis hash."""
+    def _get_latest_state(self) -> tuple[str, int]:
+        """Read the last hash and total receipt count from disk."""
         if not self.log_file.exists():
-            return self.genesis_hash
+            return self.genesis_hash, 0
 
-        last_line = ""
+        last_hash = self.genesis_hash
+        count = 0
         try:
             with open(self.log_file, encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
-                        last_line = line.strip()
-            if last_line:
-                data = json.loads(last_line)
-                return data.get("current_hash", self.genesis_hash)
+                        data = json.loads(line.strip())
+                        last_hash = data.get("current_hash", last_hash)
+                        count += 1
         except Exception:
-            return self.genesis_hash
-        return self.genesis_hash
+            return self.genesis_hash, 0
+        return last_hash, count
+
+    def _checkpoint_signature(self, last_hash: str, count: int) -> str | None:
+        """HMAC-sign the checkpoint state; returns None if no secret is configured."""
+        if not self._hmac_key:
+            return None
+        message = f"{last_hash}:{count}".encode()
+        return hmac.new(self._hmac_key.encode(), message, hashlib.sha256).hexdigest()
+
+    def _write_checkpoint(self) -> None:
+        """Persist the current (last_hash, count) state, signed if a secret is configured."""
+        checkpoint: dict[str, Any] = {"last_hash": self._last_hash, "count": self._count}
+        signature = self._checkpoint_signature(self._last_hash, self._count)
+        if signature:
+            checkpoint["hmac"] = signature
+
+        tmp_path = Path(str(self.checkpoint_file) + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(checkpoint, f)
+        tmp_path.replace(self.checkpoint_file)
 
     def _compute_hash(self, prev_hash: str, payload: dict[str, Any]) -> str:
         """Compute SHA-256 hash chaining previous hash with deterministic canonical JSON payload."""
@@ -101,11 +134,51 @@ class AuditLedger:
             f.write(receipt.model_dump_json() + "\n")
 
         self._last_hash = current_hash
+        self._count += 1
+        self._write_checkpoint()
         return receipt
+
+    def _verify_checkpoint(self, final_hash: str, count: int) -> str | None:
+        """Cross-check the log file's actual final state against the sidecar checkpoint.
+
+        Returns a violation message if tampering is detected, or None if the
+        checkpoint is absent (nothing to check) or matches. This is what catches
+        truncation -- the forward hash-chain walk alone cannot, since a truncated
+        file is still internally self-consistent from genesis to wherever it was cut.
+        """
+        if not self.checkpoint_file.exists():
+            return None
+
+        try:
+            with open(self.checkpoint_file, encoding="utf-8") as f:
+                checkpoint = json.load(f)
+        except Exception as e:
+            return f"Checkpoint file is corrupted or unreadable ({e}) -- cannot rule out tampering"
+
+        checkpoint_hash = checkpoint.get("last_hash")
+        checkpoint_count = checkpoint.get("count")
+
+        if self._hmac_key:
+            expected_sig = self._checkpoint_signature(checkpoint_hash or "", checkpoint_count or 0)
+            if checkpoint.get("hmac") != expected_sig:
+                return "Checkpoint signature invalid -- checkpoint does not match ATLAS_AUDIT_HMAC_SECRET"
+
+        if isinstance(checkpoint_count, int) and checkpoint_count > count:
+            return (
+                f"Ledger tampering detected: checkpoint recorded {checkpoint_count} receipts "
+                f"but only {count} are present in the log file -- entries were deleted"
+            )
+        if checkpoint_hash and checkpoint_hash != final_hash:
+            return "Ledger tampering detected: final hash does not match the last known checkpoint"
+
+        return None
 
     def verify_ledger(self) -> tuple[bool, int, str]:
         """Traverse the log file and verify cryptographic integrity of the entire chain."""
         if not self.log_file.exists():
+            checkpoint_violation = self._verify_checkpoint(self.genesis_hash, 0)
+            if checkpoint_violation:
+                return False, 0, checkpoint_violation
             return True, 0, "Ledger is empty (valid)"
 
         expected_prev_hash = self.genesis_hash
@@ -154,5 +227,9 @@ class AuditLedger:
 
                 expected_prev_hash = entry["current_hash"]
                 count += 1
+
+        checkpoint_violation = self._verify_checkpoint(expected_prev_hash, count)
+        if checkpoint_violation:
+            return False, count, checkpoint_violation
 
         return True, count, f"Ledger verified successfully ({count} valid receipts, 0 tampered)"
