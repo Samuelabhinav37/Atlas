@@ -222,6 +222,28 @@ def test_admin_insert_missing_tenant_id_gets_it_injected():
     assert "tenant_42" in decision.modified_args["query"]
 
 
+def test_blocked_rm_wildcard_root_via_execute_command():
+    """End-to-end regression for the shell_inspector wildcard bypass: 'rm -rf
+    /*' reached the real evaluate_tool_call() as ALLOW before the fix, since
+    ShellASTInspector's target check did a string-equality comparison that a
+    trailing '*' defeated."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="alice", scopes=["execute_command:execute"])
+    agent = AgentIdentity(agent_id="op_1", role="operator")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="execute_command",
+        args={"command": "rm -rf /*"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+
+
 def test_blocked_restricted_table():
     evaluator = PolicyEvaluator()
     user = UserIdentity(user_id="alice", scopes=["sql_query:execute"])

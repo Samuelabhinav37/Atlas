@@ -71,6 +71,59 @@ def test_block_powershell_remove_item():
     assert any("powershell" in r.lower() for r in res.detected_risks)
 
 
+def test_block_rm_wildcard_root():
+    """Regression: `rm -rf /*` deletes everything under root exactly like
+    `rm -rf /`, but the old target check compared the path string for exact
+    equality against DESTRUCTIVE_RM_TARGETS -- '/*' != '/' so it slipped
+    through. A single trailing '*' fully defeated the destructive-rm guard."""
+    inspector = ShellASTInspector()
+    res = inspector.inspect("rm -rf /*")
+    assert res.is_safe is False
+    assert any("destructive" in r.lower() for r in res.detected_risks)
+
+
+def test_block_rm_wildcard_system_path():
+    inspector = ShellASTInspector()
+    res = inspector.inspect("rm -rf /etc/*")
+    assert res.is_safe is False
+
+
+def test_block_rm_home_directory():
+    inspector = ShellASTInspector()
+    res = inspector.inspect("rm -rf ~")
+    assert res.is_safe is False
+
+
+def test_allow_rm_wildcard_workspace_scoped():
+    """A wildcard delete scoped to a normal workspace path is not a system
+    path and must still be allowed -- the fix must not over-block."""
+    inspector = ShellASTInspector()
+    res = inspector.inspect("rm -rf /workspace/tmp/*")
+    assert res.is_safe is True
+
+
+def test_block_find_delete_root():
+    """Regression: `find / -delete` recursively deletes a whole tree just
+    like `rm -rf`, but had zero coverage in DANGEROUS_COMMANDS or the rm
+    check (different command name entirely)."""
+    inspector = ShellASTInspector()
+    res = inspector.inspect("find / -delete")
+    assert res.is_safe is False
+    assert any("find" in r.lower() for r in res.detected_risks)
+
+
+def test_block_find_delete_system_path():
+    inspector = ShellASTInspector()
+    res = inspector.inspect("find /etc -delete")
+    assert res.is_safe is False
+
+
+def test_allow_find_delete_workspace_scoped():
+    inspector = ShellASTInspector()
+    res = inspector.inspect("find /workspace/tmp -delete")
+    assert res.is_safe is True
+
+
 def test_block_python_interpreter():
     """Phase 1.4: python3 -c invocation must be flagged."""
     inspector = ShellASTInspector()

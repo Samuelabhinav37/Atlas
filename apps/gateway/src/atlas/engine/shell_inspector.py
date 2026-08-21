@@ -85,6 +85,20 @@ class ShellASTInspector:
     def __init__(self):
         self.deobfuscator = RecursiveDeobfuscator()
 
+    # Matches one or more trailing glob segments so 'rm -rf /etc/*' and
+    # 'rm -rf /*' are compared against DESTRUCTIVE_RM_TARGETS the same way
+    # as 'rm -rf /etc' and 'rm -rf /' -- a bare wildcard glob still deletes
+    # everything a literal path match would, it just isn't string-equal to
+    # the entries in that set.
+    _TRAILING_GLOB_RE = re.compile(r"(?:[/\\]\*+)+$")
+
+    def _normalize_rm_path(self, path: str) -> str:
+        stripped = self._TRAILING_GLOB_RE.sub("", path)
+        stripped = stripped.rstrip("/").rstrip("\\")
+        if not stripped or stripped in ("*", "/*", "\\*"):
+            return "/"
+        return stripped
+
     def _check_rm_dangerous(self, cmd_parts: list[str]) -> str | None:
         """Check if an rm command is genuinely dangerous (recursive+force on system paths).
 
@@ -117,11 +131,9 @@ class ShellASTInspector:
 
         # Check for destructive targets
         for path in paths:
-            normalized_path = path.rstrip("/").rstrip("\\")
-            if not normalized_path:
-                normalized_path = "/"
+            normalized_path = self._normalize_rm_path(path)
 
-            if normalized_path in self.DESTRUCTIVE_RM_TARGETS or normalized_path == "/":
+            if normalized_path in self.DESTRUCTIVE_RM_TARGETS or normalized_path in ("/", "~"):
                 if has_recursive and has_force:
                     return f"Destructive rm -rf targeting system path '{path}'"
                 if normalized_path == "/" or normalized_path in {"C:\\", "C:\\Windows"}:
@@ -130,6 +142,32 @@ class ShellASTInspector:
         # Also catch `rm -rf /` even if flags are split
         if has_recursive and has_force and "no-preserve-root" in flags:
             return "Destructive rm with --no-preserve-root"
+
+        return None
+
+    def _check_find_delete_dangerous(self, cmd_parts: list[str]) -> str | None:
+        """Check if a `find ... -delete` targets a system path.
+
+        `find <path> -delete` recursively deletes everything under <path>
+        with no confirmation, no -r/-f flags to gate on, and none of rm's
+        signature -- it is functionally equivalent to `rm -rf <path>` and
+        was previously not checked at all. Only the leading positional path
+        argument is inspected (standard `find <path> [expression]` form);
+        this deliberately doesn't attempt to parse find's full expression
+        grammar.
+        """
+        if not cmd_parts or cmd_parts[0].lower() != "find":
+            return None
+        if "-delete" not in cmd_parts:
+            return None
+
+        for part in cmd_parts[1:]:
+            if part.startswith("-"):
+                break
+            normalized_path = self._normalize_rm_path(part)
+            if normalized_path in self.DESTRUCTIVE_RM_TARGETS or normalized_path in ("/", "~"):
+                return f"Destructive 'find -delete' targeting system path '{part}'"
+            break
 
         return None
 
@@ -194,6 +232,10 @@ class ShellASTInspector:
                 rm_risk = self._check_rm_dangerous(cmd_parts)
                 if rm_risk:
                     risks.append(rm_risk)
+            elif base_cmd == "find":
+                find_risk = self._check_find_delete_dangerous(cmd_parts)
+                if find_risk:
+                    risks.append(find_risk)
             elif base_cmd == "chmod":
                 # Check for dangerous permission patterns
                 for chmod_pat in self.CHMOD_DANGEROUS_PATTERNS:
