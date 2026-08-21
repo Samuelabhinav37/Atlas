@@ -17,8 +17,14 @@ class SecretScrubber:
     """Detects and redacts credentials, private keys, API tokens, and PII."""
 
     SECRET_PATTERNS = [
-        ("openai_api_key", r"sk-(?:proj-|admin-|svcacct-)?[a-zA-Z0-9_-]{20,200}"),
+        # anthropic_api_key must be checked before openai_api_key: both start
+        # with "sk-", and openai_api_key's pattern is broad enough to also
+        # match "sk-ant-...", so checking it first redacted the secret bytes
+        # correctly but mislabeled every Anthropic key as OPENAI_API_KEY in
+        # detected_types/the redaction placeholder -- not a leak (the value
+        # is still redacted either way), but wrong telemetry/incident data.
         ("anthropic_api_key", r"sk-ant-[a-zA-Z0-9_-]{20,200}"),
+        ("openai_api_key", r"sk-(?:proj-|admin-|svcacct-)?[a-zA-Z0-9_-]{20,200}"),
         ("aws_access_key", r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
         ("aws_secret_key", r"(?i)aws_secret_access_key\s*[:=]\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"),
         ("gcp_api_key", r"AIza[0-9A-Za-z_-]{35}"),

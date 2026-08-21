@@ -83,6 +83,20 @@ def test_secret_scrubber():
     assert "[REDACTED:OPENAI_API_KEY]" in res.sanitized_text or "[REDACTED:AWS_ACCESS_KEY]" in res.sanitized_text
 
 
+def test_secret_scrubber_labels_anthropic_key_correctly():
+    """Regression: openai_api_key's pattern (sk-...) is broad enough to also
+    match an Anthropic key (sk-ant-...), and was checked first, so every
+    Anthropic key got redacted correctly but mislabeled as OPENAI_API_KEY in
+    both detected_types and the placeholder text -- wrong incident/telemetry
+    data, though not an actual leak since the value was still redacted."""
+    scrubber = SecretScrubber()
+    text = "key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890ABCD"
+    res = scrubber.scan_and_redact(text)
+    assert res.detected_types == ["anthropic_api_key"]
+    assert "[REDACTED:ANTHROPIC_API_KEY]" in res.sanitized_text
+    assert "sk-ant" not in res.sanitized_text
+
+
 def test_inter_tool_context_poisoning():
     scrubber = InterToolScrubber()
     poisoned_jira = (
