@@ -83,7 +83,6 @@ class EvaluateToolRequest(BaseModel):
 class DelegateTaskRequest(BaseModel):
     parent_agent_id: str
     child_agent_id: str
-    human_user_id: str
     delegated_scopes: list[str]
     current_depth: int = 1
     ttl_seconds: int = 300
@@ -119,12 +118,25 @@ async def health():
 
 
 @app.post("/v1/agent/delegate")
-async def issue_delegation_envelope(req: DelegateTaskRequest):
-    """Issue a cryptographically signed Agent Delegation Token (ADT) for sub-agent handoffs."""
+async def issue_delegation_envelope(req: DelegateTaskRequest, user: UserIdentity = Depends(get_verified_user)):
+    """Issue a cryptographically signed Agent Delegation Token (ADT) for sub-agent handoffs.
+
+    `human_user_id` on the token is always the verified caller, never client-supplied.
+    A caller can only delegate scopes it already holds -- delegation attenuates
+    authority, it cannot be used to mint scopes the issuing human doesn't have.
+    """
+    if "admin:all" not in user.scopes:
+        unauthorized = set(req.delegated_scopes) - set(user.scopes)
+        if unauthorized:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot delegate scopes you do not hold: {sorted(unauthorized)}",
+            )
+
     token = delegation_manager.issue_delegation_token(
         parent_agent_id=req.parent_agent_id,
         child_agent_id=req.child_agent_id,
-        human_user_id=req.human_user_id,
+        human_user_id=user.user_id,
         delegated_scopes=req.delegated_scopes,
         current_depth=req.current_depth,
         ttl_seconds=req.ttl_seconds,
@@ -141,6 +153,7 @@ async def evaluate_action(req: EvaluateToolRequest, user: UserIdentity = Depends
     against.
     """
     trace_id = req.trace_id or f"tr_{secrets.token_hex(6)}"
+    decision_user = user
 
     # If an Agent Delegation Token is supplied, verify it first
     if req.delegation_token:
@@ -150,7 +163,13 @@ async def evaluate_action(req: EvaluateToolRequest, user: UserIdentity = Depends
             target_child_agent_id=req.agent.agent_id,
             required_scope=required_scope,
         )
-        if not del_res.is_valid:
+        if del_res.is_valid:
+            # Delegation can only narrow authority, never grant beyond what the
+            # caller's own verified token already holds -- the effective scope set
+            # evaluated against is the intersection, not the token's scopes alone.
+            effective_scopes = sorted(set(user.scopes) & set(del_res.allowed_scopes))
+            decision_user = user.model_copy(update={"scopes": effective_scopes})
+        else:
             audit_ledger.record_decision(
                 trace_id=trace_id,
                 user_id=user.user_id,
@@ -173,7 +192,7 @@ async def evaluate_action(req: EvaluateToolRequest, user: UserIdentity = Depends
             }
 
     decision = evaluator.evaluate_tool_call(
-        user=user,
+        user=decision_user,
         agent=req.agent,
         tool=req.tool,
         args=req.arguments,
