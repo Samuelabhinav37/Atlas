@@ -427,8 +427,21 @@ async def serve_dashboard():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Atlas // AI Agent Runtime Security Control Plane</title>
+    <!--
+      CSP restricts external loads to exactly the three CDN origins this page
+      actually uses -- a supply-chain compromise of any other host cannot inject
+      script/style here even if it somehow got a URL onto the page. Font Awesome's
+      CSS is a static versioned file and gets an SRI hash below (computed from the
+      real fetched bytes, not copied from a webpage). The Tailwind Play CDN script
+      and Google Fonts' CSS response are both excluded from SRI by design -- Tailwind's
+      script dynamically generates CSS from the DOM, and Google Fonts serves different
+      CSS per User-Agent -- so origin-restriction via CSP is the applicable defense
+      for those two, not a hash.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src https://cdnjs.cloudflare.com https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none';">
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+          integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0" crossorigin="anonymous">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
         body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #0b0f17; color: #e2e8f0; }
