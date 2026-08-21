@@ -46,6 +46,22 @@ class RecursiveDeobfuscator:
                 unpacked_layers.append("unicode_nfkc")
                 changed = True
 
+            # 1.5 Strip invisible Unicode format characters (category "Cf"):
+            # zero-width space (U+200B), zero-width non-joiner/joiner
+            # (U+200C/D), zero-width no-break space / BOM (U+FEFF), word
+            # joiner (U+2060), soft hyphen (U+00AD), directional marks, etc.
+            # NFKC does not remove these. They're invisible to a human but
+            # split a word into separate regex tokens character-by-character
+            # -- "i​gnore all previous instructions" reads as "ignore
+            # all previous instructions" but \bignore\b never matches it, and
+            # Python's \s does not match Cf characters either, so this evaded
+            # every downstream detector's word-boundary and spacing checks.
+            stripped = "".join(ch for ch in current if unicodedata.category(ch) != "Cf")
+            if stripped != current:
+                current = stripped
+                unpacked_layers.append("invisible_char_strip")
+                changed = True
+
             # 2. URL Decoding
             url_decoded = urllib.parse.unquote(current)
             if url_decoded != current:

@@ -5,6 +5,8 @@ Prompt injection and jailbreak detector for agent ingress.
 import re
 from dataclasses import dataclass
 
+from atlas.detectors.deobfuscator import RecursiveDeobfuscator
+
 
 @dataclass
 class InjectionScanResult:
@@ -18,11 +20,11 @@ class InjectionScanResult:
 _RAW_PATTERNS: list[tuple[str, str, float]] = [
     # === Instruction Override (original + synonyms) ===
     (
-        r"(?i)(ignore|forget|disregard|override|bypass|skip|abandon|dismiss|neglect|drop)\s+(all\s+)?(previous|prior|above|earlier|original|initial|existing|old)\s+(instructions|prompts|directions|rules|guidelines|constraints|commands|programming)",
+        r"(?i)(ignore|forget|disregard|override|bypass|skip|abandon|dismiss|neglect|drop)\s+(all\s+|your\s+|the\s+|my\s+|any\s+)?(previous|prior|above|earlier|original|initial|existing|old)\s+(instructions|prompts|directions|rules|guidelines|constraints|commands|programming)",
         "instruction_override",
         0.95,
     ),
-    (r"(?i)disregard\s+all\s+(rules|guidelines|safety|restrictions|limitations)", "rule_disregard", 0.95),
+    (r"(?i)disregard\s+(all\s+|your\s+|the\s+|any\s+)?(rules|guidelines|safety|restrictions|limitations)", "rule_disregard", 0.95),
     (r"(?i)do\s+not\s+follow\s+(your|any|the)\s+(previous|original|initial)\s+(instructions|rules|programming)", "instruction_override", 0.95),
     (r"(?i)stop\s+being\s+(an?\s+)?(helpful|safe|responsible|aligned)\s+(assistant|AI|model)", "instruction_override", 0.90),
 
@@ -104,20 +106,34 @@ def _collapse_spacing(text: str) -> str:
 class PromptInjectionDetector:
     """Detects direct prompt injection, system prompt overrides, and jailbreak patterns."""
 
+    def __init__(self):
+        self.deobfuscator = RecursiveDeobfuscator()
+
     def scan(self, text: str) -> InjectionScanResult:
         """Scan input text for adversarial injection markers with multi-signal aggregation."""
         if not text:
             return InjectionScanResult(is_suspicious=False, confidence=0.0, matched_patterns=[], description="Clean")
 
-        # Normalize spacing evasion before scanning
+        # Normalize spacing evasion, and separately decode base64/URL/hex/
+        # Unicode-homoglyph obfuscation (same RecursiveDeobfuscator used by
+        # shell_inspector, evaluator's FS/SQL paths, and inter_tool_scrubber)
+        # before scanning -- this detector previously only handled spacing
+        # evasion, so a base64-encoded or zero-width-character-split payload
+        # reached callers that scan raw ingress text (server.py's
+        # /v1/chat/completions guard, sdk.py's inspect_prompt) completely
+        # unmatched.
         normalized = _collapse_spacing(text)
+        deobfuscated = self.deobfuscator.normalize(text).normalized_text
+        deobfuscated_normalized = _collapse_spacing(deobfuscated)
+        scan_variants = {text, normalized, deobfuscated, deobfuscated_normalized}
 
         matches: list[str] = []
         confidences: list[float] = []
 
         for compiled_pat, name, conf in COMPILED_PATTERNS:
-            # Check both original and spacing-normalized text
-            if (compiled_pat.search(text) or compiled_pat.search(normalized)) and name not in matches:
+            if name in matches:
+                continue
+            if any(compiled_pat.search(variant) for variant in scan_variants):
                 matches.append(name)
                 confidences.append(conf)
 
