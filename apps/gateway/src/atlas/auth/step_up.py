@@ -15,6 +15,7 @@ class ChallengeStatus(StrEnum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
+    CONSUMED = "CONSUMED"
 
 
 @dataclass
@@ -94,6 +95,19 @@ class StepUpAuthManager:
 
         challenge.status = ChallengeStatus.REJECTED
         challenge.resolved_by = approver_id
+        return True
+
+    def consume_challenge(self, challenge_id: str) -> bool:
+        """Atomically transition an APPROVED challenge to CONSUMED.
+
+        Must be called exactly once, at the moment a challenge's approval is actually
+        relied on to authorize an action -- this ensures a single human approval can
+        authorize exactly one action rather than being replayable across many.
+        """
+        challenge = self.get_challenge(challenge_id)
+        if not challenge or challenge.status != ChallengeStatus.APPROVED:
+            return False
+        challenge.status = ChallengeStatus.CONSUMED
         return True
 
     def get_pending_challenges(self) -> list[StepUpChallenge]:

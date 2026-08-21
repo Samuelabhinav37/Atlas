@@ -57,21 +57,38 @@ def test_evaluate_allows_with_verified_scope():
     assert resp.json()["allowed"] is True
 
 
-def test_step_up_approve_requires_authorized_scope():
+_PAYMENT_ARGS = {"amount": 50000, "recipient": "vendor_corp"}
+_PAYMENT_BODY = {
+    "agent": {"agent_id": "payroll_bot", "role": "operator"},
+    "tool": "execute_payment",
+    "arguments": _PAYMENT_ARGS,
+    "session": {"session_id": "sess_stepup_test"},
+}
+
+
+def test_step_up_cannot_be_self_declared():
+    """Regression: step_up_approved used to be a plain client-supplied boolean on
+    SessionState with no server-side verification at all -- a caller could get
+    ALLOW on its very first request for a sensitive tool without any challenge ever
+    being created or approved. It must now be ignored entirely."""
+    token = issue_user_token(user_id="attacker", scopes=["execute_payment:execute"])
+    body = {**_PAYMENT_BODY, "session": {"session_id": "s", "step_up_approved": True}}
+    resp = client.post("/v1/agent/evaluate", json=body, headers=_auth(token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["allowed"] is False
+    assert data["decision"] == "STEP_UP_REQUIRED"
+
+
+def test_step_up_full_challenge_approve_retry_flow():
     """A caller who triggers a step-up challenge cannot immediately self-approve it
-    by hitting the approve endpoint without the step_up:approve scope."""
+    (no step_up:approve scope). Once a properly-scoped approver approves it, a retry
+    presenting the exact same action plus the challenge_id is allowed -- but a second
+    retry with the same challenge_id is not, since one approval authorizes one action."""
     trigger_token = issue_user_token(user_id="finance_user", scopes=["execute_payment:execute"])
-    eval_resp = client.post(
-        "/v1/agent/evaluate",
-        json={
-            "agent": {"agent_id": "payroll_bot", "role": "operator"},
-            "tool": "execute_payment",
-            "arguments": {"amount": 50000, "recipient": "vendor_corp"},
-            "session": {"session_id": "sess_stepup_test", "step_up_approved": False},
-        },
-        headers=_auth(trigger_token),
-    )
+    eval_resp = client.post("/v1/agent/evaluate", json=_PAYMENT_BODY, headers=_auth(trigger_token))
     assert eval_resp.status_code == 200
+    assert eval_resp.json()["decision"] == "STEP_UP_REQUIRED"
     challenge_id = eval_resp.json()["challenge_id"]
     assert challenge_id
 
@@ -84,6 +101,39 @@ def test_step_up_approve_requires_authorized_scope():
     resp = client.post(f"/v1/auth/step-up/approve/{challenge_id}", headers=_auth(approver_token))
     assert resp.status_code == 200
     assert resp.json()["approver"] == "security_lead"
+
+    # Retrying the exact same action with the approved challenge_id is now allowed.
+    retry_body = {**_PAYMENT_BODY, "step_up_challenge_id": challenge_id}
+    retry_resp = client.post("/v1/agent/evaluate", json=retry_body, headers=_auth(trigger_token))
+    assert retry_resp.status_code == 200
+    assert retry_resp.json()["allowed"] is True
+
+    # The same challenge_id cannot be replayed for a second action.
+    replay_resp = client.post("/v1/agent/evaluate", json=retry_body, headers=_auth(trigger_token))
+    assert replay_resp.status_code == 200
+    assert replay_resp.json()["allowed"] is False
+    assert replay_resp.json()["decision"] == "STEP_UP_REQUIRED"
+
+
+def test_step_up_approved_challenge_does_not_transfer_to_different_arguments():
+    """An approval for one specific action must not authorize a different action,
+    even from the same user/agent/tool -- e.g. approving a $50k payment must not
+    also authorize a $999k payment via the same challenge_id."""
+    trigger_token = issue_user_token(user_id="finance_user_2", scopes=["execute_payment:execute"])
+    eval_resp = client.post("/v1/agent/evaluate", json=_PAYMENT_BODY, headers=_auth(trigger_token))
+    challenge_id = eval_resp.json()["challenge_id"]
+
+    approver_token = issue_user_token(user_id="security_lead", scopes=["step_up:approve"])
+    client.post(f"/v1/auth/step-up/approve/{challenge_id}", headers=_auth(approver_token))
+
+    tampered_body = {
+        **_PAYMENT_BODY,
+        "arguments": {"amount": 999000, "recipient": "attacker_account"},
+        "step_up_challenge_id": challenge_id,
+    }
+    resp = client.post("/v1/agent/evaluate", json=tampered_body, headers=_auth(trigger_token))
+    assert resp.status_code == 200
+    assert resp.json()["allowed"] is False
 
 
 def test_chat_completions_rejects_missing_token():

@@ -110,7 +110,7 @@ def test_step_up_challenge():
     evaluator = PolicyEvaluator()
     user = UserIdentity(user_id="dave", scopes=["execute_payment:execute"])
     agent = AgentIdentity(agent_id="operator_1", role="operator")
-    session = SessionState(session_id="s1", step_up_approved=False)
+    session = SessionState(session_id="s1")
 
     decision = evaluator.evaluate_tool_call(
         user=user,
@@ -122,6 +122,36 @@ def test_step_up_challenge():
 
     assert decision.allowed is False
     assert decision.outcome == DecisionOutcome.STEP_UP_REQUIRED
+
+
+def test_step_up_cannot_be_self_declared_via_session():
+    """Regression: step-up must never be satisfiable by anything the caller controls
+    directly -- only evaluate_tool_call's own step_up_verified parameter, which the
+    caller (server.py) must derive from a genuinely verified approved challenge."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="dave", scopes=["execute_payment:execute"])
+    agent = AgentIdentity(agent_id="operator_1", role="operator")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="execute_payment",
+        args={"amount": 999999, "recipient": "attacker_account"},
+        session=session,
+        step_up_verified=False,
+    )
+    assert decision.outcome == DecisionOutcome.STEP_UP_REQUIRED
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="execute_payment",
+        args={"amount": 999999, "recipient": "attacker_account"},
+        session=session,
+        step_up_verified=True,
+    )
+    assert decision.allowed is True
 
 
 def test_blocked_absolute_path_etc_passwd():

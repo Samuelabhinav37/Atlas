@@ -241,8 +241,15 @@ class PolicyEvaluator:
         tool: str,
         args: dict[str, Any],
         session: SessionState,
+        step_up_verified: bool = False,
     ) -> PolicyDecision:
-        """Run policy decision pipeline against input context with de-obfuscation and AST validation."""
+        """Run policy decision pipeline against input context with de-obfuscation and AST validation.
+
+        `step_up_verified` must only ever be set True by a caller that has itself
+        verified a matching, still-APPROVED StepUpChallenge (see proxy/server.py) --
+        it must never be derived from anything the client can set directly, since
+        that would let a caller self-approve its own sensitive action.
+        """
         # 0. Active Deception / Honeypot Tool Trap Check
         hp_res = self.honeypot_manager.check_trigger(tool, args)
         if hp_res.triggered:
@@ -294,7 +301,7 @@ class PolicyEvaluator:
             "terminate_instance",
             "drop_db",
         ]
-        if tool in sensitive_tools and not session.step_up_approved:
+        if tool in sensitive_tools and not step_up_verified:
             mapping = taxonomy_mapper.enrich(
                 atlas_id="AML.T0086",
                 owasp_id="ASI03",

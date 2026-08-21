@@ -178,7 +178,7 @@ def benchmark():
             "agent": AgentIdentity(agent_id="payroll_bot", role="operator"),
             "tool": "execute_payment",
             "args": {"amount": 50000, "recipient": "vendor_corp"},
-            "session": SessionState(session_id="s5", step_up_approved=False),
+            "session": SessionState(session_id="s5"),
         },
     ]
 

@@ -37,7 +37,6 @@ class SessionState(BaseModel):
     step_count: int = 1
     total_tokens_consumed: int = 0
     tool_calls_per_minute: int = 0
-    step_up_approved: bool = False
 
 
 class SecurityTaxonomyMapping(BaseModel):

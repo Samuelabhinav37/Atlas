@@ -10,7 +10,7 @@ from typing import Any
 
 from atlas.audit.ledger import AuditLedger
 from atlas.auth.delegation import AgentDelegationManager
-from atlas.auth.step_up import StepUpAuthManager
+from atlas.auth.step_up import ChallengeStatus, StepUpAuthManager
 from atlas.auth.tokens import InvalidTokenError, issue_user_token, verify_user_token
 from atlas.detectors.canary import CanaryTrapEngine
 from atlas.detectors.inter_tool_scrubber import InterToolScrubber
@@ -78,6 +78,7 @@ class EvaluateToolRequest(BaseModel):
     session: SessionState = Field(default_factory=lambda: SessionState(session_id="sess_default"))
     trace_id: str | None = None
     delegation_token: str | None = None
+    step_up_challenge_id: str | None = None
 
 
 class DelegateTaskRequest(BaseModel):
@@ -150,7 +151,9 @@ async def evaluate_action(req: EvaluateToolRequest, user: UserIdentity = Depends
 
     `user` identity and scopes come only from the verified bearer token, never from
     the request body -- a caller cannot self-report the privileges it is evaluated
-    against.
+    against. Sensitive tools additionally require `step_up_challenge_id` to reference
+    a genuinely APPROVED StepUpChallenge matching this exact user/agent/tool/arguments
+    -- a client cannot self-declare its own session as already approved.
     """
     trace_id = req.trace_id or f"tr_{secrets.token_hex(6)}"
     decision_user = user
@@ -191,12 +194,33 @@ async def evaluate_action(req: EvaluateToolRequest, user: UserIdentity = Depends
                 "taxonomy": del_res.taxonomy.model_dump() if del_res.taxonomy else None,
             }
 
+    # Step-up verification: a sensitive tool call is only considered approved if the
+    # caller presents a challenge_id that is genuinely APPROVED and matches this exact
+    # user/agent/tool/arguments combination -- never derived from anything the client
+    # asserts about its own session, since that would let a caller self-approve.
+    step_up_verified = False
+    if req.step_up_challenge_id:
+        challenge = step_up_manager.get_challenge(req.step_up_challenge_id)
+        challenge_matches = (
+            challenge is not None
+            and challenge.status == ChallengeStatus.APPROVED
+            and challenge.user_id == user.user_id
+            and challenge.agent_id == req.agent.agent_id
+            and challenge.tool_name == req.tool
+            and challenge.arguments == req.arguments
+        )
+        if challenge_matches:
+            # Consume immediately so this one approval can never authorize a second
+            # action, even if this request is somehow retried or replayed.
+            step_up_verified = step_up_manager.consume_challenge(req.step_up_challenge_id)
+
     decision = evaluator.evaluate_tool_call(
         user=decision_user,
         agent=req.agent,
         tool=req.tool,
         args=req.arguments,
         session=req.session,
+        step_up_verified=step_up_verified,
     )
 
     challenge_id = None
@@ -555,6 +579,9 @@ async def serve_dashboard():
                         <p id="sim-res-reason" class="text-xs text-slate-300"></p>
                         <div id="sim-res-rewrite" class="hidden text-xs text-emerald-400 mono p-2 rounded bg-emerald-950/20 border border-emerald-900"></div>
                         <div id="sim-res-tax" class="text-xs text-cyan-400 mono pt-1 border-t border-slate-800"></div>
+                        <button id="sim-res-retry" onclick="retryAfterStepUp()" class="hidden w-full py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs transition">
+                            <i class="fa-solid fa-rotate-right mr-1"></i> Retry Now That It's Approved
+                        </button>
                     </div>
                 </div>
 
@@ -611,7 +638,10 @@ async def serve_dashboard():
             document.getElementById('sim-args').value = sc.args;
         }
 
-        async function executeSimulation() {
+        let lastSimPayload = null;
+        let lastStepUpChallengeId = null;
+
+        async function executeSimulation(stepUpChallengeId) {
             let args;
             try { args = JSON.parse(document.getElementById('sim-args').value); }
             catch(e) { alert("Invalid JSON in arguments"); return; }
@@ -620,8 +650,12 @@ async def serve_dashboard():
                 agent: { agent_id: 'agent_interactive', role: document.getElementById('sim-role').value },
                 tool: document.getElementById('sim-tool').value,
                 arguments: args,
-                session: { session_id: 'sess_dash', step_up_approved: false }
+                session: { session_id: 'sess_dash' },
             };
+            if (stepUpChallengeId) {
+                payload.step_up_challenge_id = stepUpChallengeId;
+            }
+            lastSimPayload = payload;
 
             const res = await fetch('/v1/agent/evaluate', {
                 method: 'POST',
@@ -636,9 +670,12 @@ async def serve_dashboard():
             const reason = document.getElementById('sim-res-reason');
             const tax = document.getElementById('sim-res-tax');
             const rewriteBox = document.getElementById('sim-res-rewrite');
+            const retryBtn = document.getElementById('sim-res-retry');
 
             card.classList.remove('hidden', 'border-red-500', 'border-emerald-500', 'border-amber-500');
             badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold mono ';
+            retryBtn.classList.add('hidden');
+            lastStepUpChallengeId = null;
 
             if (data.decision === 'ALLOW') {
                 card.classList.add('border-emerald-500');
@@ -648,6 +685,14 @@ async def serve_dashboard():
                 card.classList.add('border-amber-500');
                 badge.classList.add('bg-amber-500/20', 'text-amber-400');
                 badge.innerText = 'STEP-UP REQUIRED (HITL)';
+                if (data.challenge_id) {
+                    // A human must approve this exact challenge (see the pending
+                    // approvals panel below) before a retry can succeed -- the
+                    // gateway verifies the approval server-side, it is not implied
+                    // by clicking this button.
+                    lastStepUpChallengeId = data.challenge_id;
+                    retryBtn.classList.remove('hidden');
+                }
             } else {
                 card.classList.add('border-red-500');
                 badge.classList.add('bg-red-500/20', 'text-red-400');
@@ -672,6 +717,11 @@ async def serve_dashboard():
             }
 
             await refreshData();
+        }
+
+        async function retryAfterStepUp() {
+            if (!lastStepUpChallengeId) return;
+            await executeSimulation(lastStepUpChallengeId);
         }
 
         async function approveChallenge(cid) {
