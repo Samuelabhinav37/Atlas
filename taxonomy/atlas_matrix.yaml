@@ -36,7 +36,11 @@ techniques:
     name: "Agentic Goal Hijacking"
     tactic: "Impact"
     description: "Adversary subverts the agent's high-level objective, redirecting agent reasoning loops toward unintended actions."
-    mitigation: "Semantic Invariant Verification & Circuit Breakers"
+    mitigation: "Session-Level Budget & Depth Circuit Breakers. Semantic Invariant Verification
+      (atlas.detectors.semantic_invariant.SemanticInvariantChecker) exists as a
+      goal-drift detector but is not currently wired into the live
+      /v1/agent/evaluate decision path -- see atlas.redteam.fuzzer's DFT-01
+      probe, reported as advisory rather than folded into the enforced score."
 
   AML.T0040:
     id: "AML.T0040"

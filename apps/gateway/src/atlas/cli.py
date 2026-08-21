@@ -124,10 +124,19 @@ def red_team():
     console.print(table)
 
     score_color = "green" if assessment.security_posture_score >= 95 else "yellow"
+    summary_lines = [
+        f"[bold {score_color}]Security Posture Score: {assessment.security_posture_score}%[/bold {score_color}]",
+        f"[white]Total Probes Executed: {assessment.total_probes} | Blocked: {assessment.total_blocked} | Bypassed: {assessment.total_bypassed}[/white]",
+    ]
+    if assessment.advisory_probes:
+        advisory_ids = ", ".join(p.probe_id for p in assessment.advisory_probes)
+        summary_lines.append(
+            f"[dim]Excluded from score ({len(assessment.advisory_probes)} advisory probe(s), "
+            f"detector not wired into the live evaluate path: {advisory_ids})[/dim]"
+        )
     console.print(
         Panel.fit(
-            f"[bold {score_color}]Security Posture Score: {assessment.security_posture_score}%[/bold {score_color}]\n"
-            f"[white]Total Probes Executed: {assessment.total_probes} | Blocked: {assessment.total_blocked} | Bypassed: {assessment.total_bypassed}[/white]",
+            "\n".join(summary_lines),
             title="Red-Team Assessment Summary",
         )
     )

@@ -48,6 +48,14 @@ _SQL_PREFIXES = re.compile(
     re.IGNORECASE,
 )
 
+# Generic SQL/prose filler words excluded when comparing goal vs. action target
+# tokens, so two unrelated statements don't look "contextually related" just
+# because they both happen to contain e.g. "FROM" or "WHERE".
+_TARGET_STOPWORDS = {
+    "from", "where", "into", "table", "select", "values", "with",
+    "join", "will", "that", "this", "then", "have", "when",
+}
+
 
 class SemanticInvariantChecker:
     """
@@ -90,30 +98,53 @@ class SemanticInvariantChecker:
         Only flags when:
         1. A critical verb appears in the tool_name itself, OR
         2. A critical verb appears in argument values that look like SQL statements
-        AND the verb does NOT appear in the original goal.
+        AND the verb is not both (a) present in the original goal AND (b) applied
+        to a target the goal actually mentioned.
+
+        Verb presence in the goal alone is deliberately NOT sufficient to exempt
+        a verb for the rest of check: original_goal is fixed for the lifetime of
+        a session (set once via set_session_goal), so if a goal mentioning
+        "delete" once -- e.g. "delete the old /tmp/cache files" -- permanently
+        exempted the verb "delete" regardless of target, a later "DELETE FROM
+        customer_accounts;" against a completely different, unrelated target
+        would silently bypass detection for the rest of the session. Requiring
+        a shared non-verb target token (e.g. a table/file/resource name) closes
+        that gap while still recognizing genuinely goal-aligned actions.
         """
-        # Check if any critical verb is in the original goal (if so, it's intentional)
         goal_has_verb = {
             verb for verb, pattern in _CRITICAL_VERB_PATTERNS if pattern.search(original_goal)
         }
+        goal_target_tokens = (
+            set(re.findall(r"\b[a-zA-Z0-9_]{4,}\b", original_goal.lower()))
+            - set(_CRITICAL_VERBS)
+            - _TARGET_STOPWORDS
+        )
 
-        # Check tool name with word-boundary matching
-        for verb, pattern in _CRITICAL_VERB_PATTERNS:
-            if verb in goal_has_verb:
-                continue
-            if pattern.search(tool_name):
+        def _is_flagged(text: str) -> bool:
+            text_tokens = (
+                set(re.findall(r"\b[a-zA-Z0-9_]{4,}\b", text.lower()))
+                - set(_CRITICAL_VERBS)
+                - _TARGET_STOPWORDS
+            )
+            shares_target = bool(text_tokens & goal_target_tokens)
+            for verb, pattern in _CRITICAL_VERB_PATTERNS:
+                if not pattern.search(text):
+                    continue
+                if verb in goal_has_verb and shares_target:
+                    continue
                 return True
+            return False
+
+        if _is_flagged(tool_name):
+            return True
 
         # Check argument values — but ONLY values that look like SQL statements
         for _key, value in tool_args.items():
             str_val = str(value)
             if not _SQL_PREFIXES.match(str_val):
                 continue
-            for verb, pattern in _CRITICAL_VERB_PATTERNS:
-                if verb in goal_has_verb:
-                    continue
-                if pattern.search(str_val):
-                    return True
+            if _is_flagged(str_val):
+                return True
 
         return False
 

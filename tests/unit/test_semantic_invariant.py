@@ -77,6 +77,41 @@ def test_no_false_positive_delete_after_days():
     assert res.risk_level != "CRITICAL"
 
 
+def test_verb_in_goal_does_not_grant_permanent_amnesty_for_other_targets():
+    """Regression: original_goal is fixed for the session (set once via
+    set_session_goal), so if a critical verb appearing anywhere in the goal
+    text exempted that verb for the rest of the session regardless of target,
+    a goal that legitimately mentions "delete" for one narrow thing (temp
+    cache files) would silently blind the detector to "delete"/"DROP" against
+    any other, completely unrelated target for the rest of the session."""
+    checker = SemanticInvariantChecker()
+    checker.set_session_goal("s6", "Delete the old temp cache files in /tmp/cache")
+
+    res = checker.check_drift(
+        session_id="s6",
+        tool_name="sql_query",
+        tool_args={"query": "DELETE FROM customer_accounts;"},
+    )
+
+    assert res.has_drifted is True
+    assert res.risk_level == "CRITICAL"
+
+
+def test_verb_in_goal_still_exempts_when_target_matches():
+    """The exemption still works for the case it exists for: a verb AND its
+    target both traceable back to the stated goal should not be CRITICAL."""
+    checker = SemanticInvariantChecker()
+    checker.set_session_goal("s7", "Delete stale rows from the cache table for compliance")
+
+    res = checker.check_drift(
+        session_id="s7",
+        tool_name="sql_query",
+        tool_args={"query": "DELETE FROM cache WHERE stale = true;"},
+    )
+
+    assert res.risk_level != "CRITICAL"
+
+
 def test_real_drop_still_caught():
     """Phase 1.6: Actual DROP TABLE in SQL arg must still be CRITICAL."""
     checker = SemanticInvariantChecker()
