@@ -29,17 +29,19 @@ All enforcement above runs as native Python in `atlas.engine.evaluator.PolicyEva
 
 ## 3. Integration Patterns
 
-### Pattern A: OpenAI / Anthropic Reverse Proxy
-Point your agent client's `base_url` to Atlas:
+### Pattern A: OpenAI / Anthropic Reverse Proxy (STUB -- ingress scanning only, no real proxying yet)
+`/v1/chat/completions` currently only runs ingress prompt-injection scanning and returns a
+canned completion -- it does not call a real upstream model, and since there's no real model
+response, it never sees or evaluates `tool_calls` through the PEP. Treat this pattern as a
+placeholder for a future real reverse proxy, not a working integration today. User identity
+comes from a verified bearer token (same as Pattern B below), not a header:
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="your-api-key",
+    api_key=user_token,  # the OpenAI SDK sends this as `Authorization: Bearer <api_key>`
     default_headers={
-        "X-User-ID": "usr_9910",
-        "X-User-Scopes": "sql_query:execute,read_file:execute",
         "X-Agent-ID": "analyst_agent_01",
         "X-Agent-Role": "analyst",
     },

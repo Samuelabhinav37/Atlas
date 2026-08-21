@@ -272,16 +272,20 @@ async def scrub_tool_output(req: ScrubContentRequest):
 @app.post("/v1/chat/completions")
 async def proxy_chat_completion(
     req: ChatCompletionRequest,
-    x_user_id: str = Header(default="usr_anonymous"),
-    x_user_scopes: str = Header(default="read,write"),
+    user: UserIdentity = Depends(get_verified_user),
     x_agent_id: str = Header(default="agent_default"),
     x_agent_role: str = Header(default="analyst"),
 ):
-    """OpenAI-compatible reverse proxy endpoint with inline PEP interception and prompt sanitization."""
-    trace_id = f"tr_{secrets.token_hex(6)}"
-    user_scopes_list = [s.strip() for s in x_user_scopes.split(",") if s.strip()]
+    """OpenAI-compatible ingress endpoint: prompt-injection scanning ahead of an upstream LLM call.
 
-    user = UserIdentity(user_id=x_user_id, scopes=user_scopes_list)
+    STUB: this does not call a real upstream model. It returns a canned completion and
+    never sees or evaluates tool_calls through the PEP, since there is no real model
+    response to extract them from -- see AGENTS.md Pattern A for the current limitation.
+    `user` identity/scopes come only from a verified bearer token, same as
+    /v1/agent/evaluate; `X-Agent-Id`/`X-Agent-Role` remain headers since they identify
+    which agent framework is calling, not a privilege grant.
+    """
+    trace_id = f"tr_{secrets.token_hex(6)}"
     agent = AgentIdentity(agent_id=x_agent_id, role=x_agent_role)
 
     # 1. Ingress prompt inspection
@@ -333,7 +337,12 @@ async def proxy_chat_completion(
             }
         ],
         "usage": {"prompt_tokens": 50, "completion_tokens": 15, "total_tokens": 65},
-        "atlas_trace": {"trace_id": trace_id, "status": "VERIFIED_ALLOW"},
+        "atlas_trace": {
+            "trace_id": trace_id,
+            "status": "VERIFIED_ALLOW",
+            "stub_response": True,
+            "note": "This endpoint does not call a real upstream model yet; see AGENTS.md Pattern A.",
+        },
     }
 
 
