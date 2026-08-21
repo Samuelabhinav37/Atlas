@@ -246,3 +246,48 @@ def test_dashboard_embeds_a_real_token_not_the_placeholder():
     assert resp.status_code == 200
     assert "__ATLAS_DASHBOARD_TOKEN__" not in resp.text
     assert "ATLAS_DASHBOARD_TOKEN" in resp.text
+
+
+def test_audit_receipts_rejects_missing_token():
+    """Regression: /v1/audit/receipts had no auth dependency at all -- anyone
+    who could reach the gateway, with zero credentials, could read every tool
+    call's raw arguments (including e.g. execute_payment amount/recipient)
+    across every user and tenant. Live-verified against a running gateway
+    before this fix; the dashboard's own fetch calls never sent a token
+    either, which is what let this go unnoticed."""
+    resp = client.get("/v1/audit/receipts")
+    assert resp.status_code in (401, 403)
+
+
+def test_audit_receipts_allows_with_verified_token():
+    token = issue_user_token(user_id="auditor", scopes=[])
+    resp = client.get("/v1/audit/receipts", headers=_auth(token))
+    assert resp.status_code == 200
+
+
+def test_audit_verify_rejects_missing_token():
+    resp = client.get("/v1/audit/verify")
+    assert resp.status_code in (401, 403)
+
+
+def test_audit_verify_allows_with_verified_token():
+    token = issue_user_token(user_id="auditor", scopes=[])
+    resp = client.get("/v1/audit/verify", headers=_auth(token))
+    assert resp.status_code == 200
+
+
+def test_scrub_rejects_missing_token():
+    resp = client.post(
+        "/v1/agent/scrub", json={"tool_name": "test_tool", "raw_content": "hello"}
+    )
+    assert resp.status_code in (401, 403)
+
+
+def test_scrub_allows_with_verified_token():
+    token = issue_user_token(user_id="caller", scopes=[])
+    resp = client.post(
+        "/v1/agent/scrub",
+        json={"tool_name": "test_tool", "raw_content": "hello"},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200

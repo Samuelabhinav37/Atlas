@@ -296,7 +296,7 @@ async def reject_step_up_challenge(
 
 
 @app.post("/v1/agent/scrub")
-async def scrub_tool_output(req: ScrubContentRequest):
+async def scrub_tool_output(req: ScrubContentRequest, user: UserIdentity = Depends(get_verified_user)):
     """Inter-Tool Return Scrubber Endpoint: Neutralizes indirect injection and context poisoning before LLM ingest."""
     result = inter_tool_scrubber.scrub(
         tool_name=req.tool_name,
@@ -390,7 +390,7 @@ async def proxy_chat_completion(
 
 
 @app.get("/v1/audit/receipts")
-async def get_audit_receipts(limit: int = 50):
+async def get_audit_receipts(limit: int = 50, user: UserIdentity = Depends(get_verified_user)):
     """Return the latest N receipts from the cryptographic audit ledger."""
     receipts = []
     if audit_ledger.log_file.exists():
@@ -403,7 +403,7 @@ async def get_audit_receipts(limit: int = 50):
 
 
 @app.get("/v1/audit/verify")
-async def verify_audit_ledger():
+async def verify_audit_ledger(user: UserIdentity = Depends(get_verified_user)):
     """Verify cryptographic chain integrity of the audit ledger."""
     valid, count, message = audit_ledger.verify_ledger()
     return {
@@ -744,7 +744,10 @@ async def serve_dashboard():
             const raw = document.getElementById('scrub-input').value;
             const res = await fetch('/v1/agent/scrub', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + ATLAS_DASHBOARD_TOKEN
+                },
                 body: JSON.stringify({ tool_name: 'test_rag', raw_content: raw })
             });
             const data = await res.json();
@@ -754,14 +757,18 @@ async def serve_dashboard():
         }
 
         async function verifyLedger() {
-            const res = await fetch('/v1/audit/verify');
+            const res = await fetch('/v1/audit/verify', {
+                headers: { 'Authorization': 'Bearer ' + ATLAS_DASHBOARD_TOKEN }
+            });
             const data = await res.json();
             alert(`Audit Ledger Status: ${data.status_message}`);
         }
 
         async function refreshData() {
             // 1. Fetch Receipts
-            const res = await fetch('/v1/audit/receipts?limit=50');
+            const res = await fetch('/v1/audit/receipts?limit=50', {
+                headers: { 'Authorization': 'Bearer ' + ATLAS_DASHBOARD_TOKEN }
+            });
             const data = await res.json();
             const feed = document.getElementById('receipts-feed');
             
