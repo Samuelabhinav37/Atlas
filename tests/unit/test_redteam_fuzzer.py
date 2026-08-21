@@ -17,20 +17,21 @@ def test_redteam_fuzzer_execution():
     assert "Shell AST & RCE Containment" in assessment.category_scores
 
 
-def test_goal_drift_probe_is_advisory_not_folded_into_score():
-    """Regression: the goal-drift probe (DFT-01) exercises
-    SemanticInvariantChecker directly, not the live /v1/agent/evaluate path,
-    so it must not count toward total_probes/security_posture_score/
-    category_scores alongside probes that DO exercise live enforcement --
-    otherwise the headline score implies protection the running gateway
-    doesn't actually provide."""
+def test_goal_drift_probe_is_now_enforced_via_real_evaluator():
+    """Goal drift is now wired into PolicyEvaluator.evaluate_tool_call() (the
+    critical-verb-divergence case), so DFT-01 goes through the real evaluator
+    like every other probe and correctly counts toward the enforced score --
+    it is no longer advisory-only."""
     fuzzer = RedTeamFuzzer()
     assessment = fuzzer.run_assessment()
 
+    dft_probe = next(p for p in assessment.probe_results if p.probe_id == "DFT-01")
+    assert dft_probe.enforced is True
+    assert dft_probe.blocked is True
+
     advisory_ids = {p.probe_id for p in assessment.advisory_probes}
-    assert "DFT-01" in advisory_ids
-    assert all(not p.enforced for p in assessment.advisory_probes)
+    assert "DFT-01" not in advisory_ids
 
     enforced_ids = {p.probe_id for p in assessment.probe_results if p.enforced}
-    assert "DFT-01" not in enforced_ids
-    assert not any("Goal Drift" in cat for cat in assessment.category_scores)
+    assert "DFT-01" in enforced_ids
+    assert "Semantic Invariant & Goal Drift" in assessment.category_scores

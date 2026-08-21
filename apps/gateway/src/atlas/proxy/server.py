@@ -100,6 +100,11 @@ class CanaryIssueRequest(BaseModel):
     label: str = "secret"
 
 
+class SessionGoalRequest(BaseModel):
+    session_id: str
+    goal: str
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str | None = None
@@ -298,6 +303,18 @@ async def reject_step_up_challenge(
     if not success:
         raise HTTPException(status_code=404, detail="Challenge not found or not pending")
     return {"challenge_id": challenge_id, "status": "REJECTED", "approver": approver.user_id}
+
+
+@app.post("/v1/agent/session/goal")
+async def set_session_goal(req: SessionGoalRequest, user: UserIdentity = Depends(get_verified_user)):
+    """Record a session's original objective so evaluate_tool_call() can DENY
+    a later tool call that critically diverges from it (goal-hijack /
+    AML.T0057) even for an otherwise-trusted role -- see
+    atlas.detectors.semantic_invariant.SemanticInvariantChecker and
+    evaluate_tool_call's "Goal Drift Check". Call this once per session
+    before evaluating tool calls, with the user's original request/prompt."""
+    evaluator.set_session_goal(req.session_id, req.goal)
+    return {"session_id": req.session_id, "status": "goal_tracked"}
 
 
 @app.post("/v1/agent/canary")

@@ -39,6 +39,7 @@ Atlas is designed around a single core insight: **LLMs cannot be trusted to judg
 * **Atlas Mitigation**:
   1. **Session-Level Budget & Depth Caps**: Hard limit of 15 tool steps per user turn to prevent infinite loops (*AML.T0057 / ASI08*).
   2. **Scoped Role-Based Tool Whitelisting**: The `analyst` role cannot call `read_file` outside the `/reports` directory, regardless of how convincing the prompt injection is.
+  3. **Goal Drift Check**: `POST /v1/agent/session/goal` records the turn's original objective (*"Summarize financial report"*); a later tool call whose action critically diverges from it -- a destructive/exfiltration verb with no basis in the stated goal -- is DENYed even for a role that would otherwise be trusted to make that call.
 
 ---
 

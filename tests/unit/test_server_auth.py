@@ -283,6 +283,40 @@ def test_scrub_rejects_missing_token():
     assert resp.status_code in (401, 403)
 
 
+def test_session_goal_rejects_missing_token():
+    resp = client.post("/v1/agent/session/goal", json={"session_id": "s1", "goal": "test"})
+    assert resp.status_code in (401, 403)
+
+
+def test_session_goal_set_and_critical_drift_denied_end_to_end():
+    """Full live wiring: declare a session's goal via the real endpoint, then
+    confirm the real /v1/agent/evaluate endpoint DENYs a critically-drifted
+    tool call in that same session -- even for the 'admin' role, which the
+    SQL role gate alone would otherwise allow."""
+    token = issue_user_token(user_id="u1", scopes=["sql_query:execute"])
+
+    goal_resp = client.post(
+        "/v1/agent/session/goal",
+        json={"session_id": "goal_e2e", "goal": "Help me find recipe ideas for dinner"},
+        headers=_auth(token),
+    )
+    assert goal_resp.status_code == 200
+
+    eval_resp = client.post(
+        "/v1/agent/evaluate",
+        json={
+            "agent": {"agent_id": "a1", "role": "admin"},
+            "tool": "sql_query",
+            "arguments": {"query": "DROP TABLE recipes;"},
+            "session": {"session_id": "goal_e2e"},
+        },
+        headers=_auth(token),
+    )
+    assert eval_resp.status_code == 200
+    assert eval_resp.json()["allowed"] is False
+    assert eval_resp.json()["policy_name"] == "atlas.invariant.goal_drift_critical"
+
+
 def test_canary_rejects_missing_token():
     resp = client.post("/v1/agent/canary", json={"session_id": "s1"})
     assert resp.status_code in (401, 403)

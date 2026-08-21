@@ -222,6 +222,71 @@ def test_admin_insert_missing_tenant_id_gets_it_injected():
     assert "tenant_42" in decision.modified_args["query"]
 
 
+def test_goal_drift_denies_critical_divergence_even_for_admin():
+    """SemanticInvariantChecker is now wired into evaluate_tool_call(): a
+    critical-verb-divergent action DENYs even for the 'admin' role, which the
+    SQL readonly_enforcement gate alone would otherwise allow to run mutating
+    SQL -- demonstrating this is the goal-drift check specifically, not the
+    SQL role gate."""
+    evaluator = PolicyEvaluator()
+    evaluator.set_session_goal("s1", "Help me find recipe ideas for dinner")
+
+    user = UserIdentity(user_id="u1", scopes=["sql_query:execute"])
+    agent = AgentIdentity(agent_id="a1", role="admin")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={"query": "DROP TABLE recipes;"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+    assert decision.policy_name == "atlas.invariant.goal_drift_critical"
+    assert decision.mapping.atlas_technique == "AML.T0057"
+
+
+def test_goal_drift_allows_aligned_action():
+    evaluator = PolicyEvaluator()
+    evaluator.set_session_goal("s2", "Generate quarterly financial revenue summary for Q3")
+
+    user = UserIdentity(user_id="u1", scopes=["sql_query:execute"])
+    agent = AgentIdentity(agent_id="a1", role="analyst")
+    session = SessionState(session_id="s2")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={"query": "SELECT revenue, quarter FROM financial_reports WHERE quarter = 'Q3';"},
+        session=session,
+    )
+
+    assert decision.allowed is True
+
+
+def test_no_goal_tracked_does_not_affect_normal_calls():
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="u1", scopes=["sql_query:execute"])
+    agent = AgentIdentity(agent_id="a1", role="admin")
+    session = SessionState(session_id="s_no_goal")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={"query": "DROP TABLE anything;"},
+        session=session,
+    )
+
+    # Still admin-allowed via the SQL role gate; goal-drift check is a no-op
+    # with nothing tracked for this session.
+    assert decision.allowed is True
+
+
 def test_canary_leak_denies_tool_call():
     """CanaryTrapEngine is now wired into the live evaluate_tool_call path:
     a canary minted for a session that reappears in any later tool call's

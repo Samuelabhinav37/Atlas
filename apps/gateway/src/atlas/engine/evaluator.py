@@ -16,6 +16,7 @@ import sqlglot
 from atlas.detectors.canary import CanaryTrapEngine
 from atlas.detectors.deobfuscator import RecursiveDeobfuscator
 from atlas.detectors.honeypots import HoneypotManager
+from atlas.detectors.semantic_invariant import SemanticInvariantChecker
 from atlas.engine.shell_inspector import ShellASTInspector
 from atlas.engine.sql_rewriter import SQLSecurityRewriter
 from atlas.models import (
@@ -137,12 +138,19 @@ class PolicyEvaluator:
         self.sql_rewriter = SQLSecurityRewriter(default_limit=100)
         self.honeypot_manager = HoneypotManager()
         self.canary_engine = CanaryTrapEngine()
+        self.semantic_checker = SemanticInvariantChecker()
 
     def issue_canary(self, session_id: str, label: str = "secret") -> str:
         """Mint a canary token bound to a session; embed it wherever sensitive
         context is loaded (e.g. a retrieved secret, a confidential document)
         so evaluate_tool_call can detect it reappearing in an outbound call."""
         return self.canary_engine.generate_canary(session_id, label=label)
+
+    def set_session_goal(self, session_id: str, goal: str) -> None:
+        """Record a session's original objective so evaluate_tool_call can
+        detect a later tool call critically diverging from it (goal-hijack /
+        AML.T0057). See the "Goal Drift Check" in evaluate_tool_call."""
+        self.semantic_checker.set_session_goal(session_id, goal)
 
     def _is_path_in_sandbox(self, path_str: str) -> bool:
         """Check if a path is contained within the workspace_root sandbox.
@@ -319,6 +327,27 @@ class PolicyEvaluator:
                 policy_name="atlas.authz.denied_tool",
                 reasons=[mapping.reason],
                 mapping=mapping,
+            )
+
+        # 2.5 Goal Drift Check. Only gates on risk_level == "CRITICAL" (a
+        # critical verb -- DROP, shutdown, exfiltrate, etc -- appearing in the
+        # action but not the session's stated goal), not on the weaker
+        # low-cosine-similarity-only signal (MEDIUM/HIGH with no critical verb).
+        # SemanticInvariantChecker's similarity scoring is a crude word/n-gram
+        # overlap heuristic, not real semantic understanding -- gating on it
+        # alone risks denying legitimate calls that simply don't share much
+        # vocabulary with the stated goal. The critical-verb signal is far
+        # more precise and is what the red-team DFT-01 probe exercises.
+        # check_drift() itself is a cheap no-op (dict lookup, has_drifted=False)
+        # when no goal has been tracked for this session_id via set_session_goal().
+        drift_res = self.semantic_checker.check_drift(session.session_id, tool, args)
+        if drift_res.has_drifted and drift_res.risk_level == "CRITICAL":
+            return PolicyDecision(
+                outcome=DecisionOutcome.DENY,
+                allowed=False,
+                policy_name="atlas.invariant.goal_drift_critical",
+                reasons=[drift_res.violation_reason or "Critical goal drift detected"],
+                mapping=drift_res.taxonomy,
             )
 
         # 3. Check step-up human-in-the-loop requirement for sensitive tools
