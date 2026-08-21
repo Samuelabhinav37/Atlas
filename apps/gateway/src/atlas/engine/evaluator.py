@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import sqlglot
+from atlas.detectors.canary import CanaryTrapEngine
 from atlas.detectors.deobfuscator import RecursiveDeobfuscator
 from atlas.detectors.honeypots import HoneypotManager
 from atlas.engine.shell_inspector import ShellASTInspector
@@ -135,6 +136,13 @@ class PolicyEvaluator:
         self.shell_inspector = ShellASTInspector()
         self.sql_rewriter = SQLSecurityRewriter(default_limit=100)
         self.honeypot_manager = HoneypotManager()
+        self.canary_engine = CanaryTrapEngine()
+
+    def issue_canary(self, session_id: str, label: str = "secret") -> str:
+        """Mint a canary token bound to a session; embed it wherever sensitive
+        context is loaded (e.g. a retrieved secret, a confidential document)
+        so evaluate_tool_call can detect it reappearing in an outbound call."""
+        return self.canary_engine.generate_canary(session_id, label=label)
 
     def _is_path_in_sandbox(self, path_str: str) -> bool:
         """Check if a path is contained within the workspace_root sandbox.
@@ -259,6 +267,26 @@ class PolicyEvaluator:
                 policy_name="atlas.deception.honeypot_tool_trap",
                 reasons=[hp_res.violation_reason or "Honeypot tool triggered"],
                 mapping=hp_res.taxonomy,
+            )
+
+        # 0.5 Canary Token Exfiltration Check. Deliberately runs against every
+        # argument value, not just tools flagged as network/exfil-risk -- a
+        # canary bound to this session_id reappearing in ANY outbound tool
+        # call is itself the signal, regardless of which tool carries it.
+        canary_leak = self.canary_engine.check_leak(session.session_id, str(args))
+        if canary_leak.leaked:
+            mapping = taxonomy_mapper.enrich(
+                atlas_id="AML.T0053",
+                owasp_id="ASI03",
+                nist_id="MEASURE-2.7",
+                reason=canary_leak.description,
+            )
+            return PolicyDecision(
+                outcome=DecisionOutcome.DENY,
+                allowed=False,
+                policy_name="atlas.deception.canary_leak_detected",
+                reasons=[mapping.reason],
+                mapping=mapping,
             )
 
         # 1. Check budget & loop limits

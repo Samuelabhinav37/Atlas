@@ -50,7 +50,7 @@ flowchart TB
         subgraph Ingress[" 1. Ingress & De-obfuscation Filter "]
             PI[Prompt Injection & Jailbreak Detector]
             Deob[Recursive De-obfuscator - URL / Base64 / Hex]
-            Canary[Synthetic Canary Trap Engine - not wired into live path]
+            Canary[Synthetic Canary Trap Engine]
         end
         
         subgraph PEP[" 2. Policy Enforcement Point (PEP) "]

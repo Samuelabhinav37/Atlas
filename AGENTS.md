@@ -21,11 +21,9 @@ Static compliance frameworks (NIST AI RMF, ISO 42001) define policies, while thr
 | **AML.T0086 (Exfiltration via Tool)** | **ASI02 (Tool Misuse)** | Agent is coerced into issuing SSRF or exfiltrating data to external webhooks. | Egress Guard & Cloud Metadata IP Blocklist (`atlas.engine.evaluator`) |
 | **AML.T0086 (Unauthorized Execution)** | **ASI05 (Unexpected RCE)** | Agent attempts path traversal (`../../`) or destructive SQL (`DROP TABLE`). | AST-based Argument Parsers (`sqlglot`, `shlex`) & Least Agency Rules |
 | **AML.T0057 (Goal Hijacking)** | **ASI08 (Cascading Failures)** | Agent enters runaway infinite retry loop or excessive token spend. | Budget Circuit Breakers & Session Depth Caps (`atlas.engine.evaluator`) |
-| **AML.T0053 (ML Artifact Exfil)** | **ASI03 (Privilege Abuse)** | Agent attempts to leak confidential context or API tokens. | Secret Scrubber (`atlas.detectors.secret_scrubber`, live via `InterToolScrubber`) |
+| **AML.T0053 (ML Artifact Exfil)** | **ASI03 (Privilege Abuse)** | Agent attempts to leak confidential context or API tokens. | Secret Scrubber (`atlas.detectors.secret_scrubber`, live via `InterToolScrubber`) & Synthetic Canary Traps (`POST /v1/agent/canary` + `atlas.engine.evaluator`'s canary-leak check) |
 
 All enforcement above runs as native Python in `atlas.engine.evaluator.PolicyEvaluator`. `policies/*.rego` is a reference implementation of the same rules in Rego/OPA syntax, kept for anyone who wants to run policy evaluation through OPA instead — it is not currently loaded or queried by the gateway.
-
-`atlas.detectors.canary.CanaryTrapEngine` (`generate_canary`/`check_leak`) is also fully implemented but is not currently called anywhere in the live request path — no endpoint injects a canary into session context or checks egress content for one, so it is not an active mitigation today despite being instantiated in `proxy/server.py`.
 
 ---
 

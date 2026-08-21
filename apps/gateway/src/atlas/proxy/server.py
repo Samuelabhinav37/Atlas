@@ -95,6 +95,11 @@ class ScrubContentRequest(BaseModel):
     session_id: str = "sess_default"
 
 
+class CanaryIssueRequest(BaseModel):
+    session_id: str
+    label: str = "secret"
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str | None = None
@@ -293,6 +298,18 @@ async def reject_step_up_challenge(
     if not success:
         raise HTTPException(status_code=404, detail="Challenge not found or not pending")
     return {"challenge_id": challenge_id, "status": "REJECTED", "approver": approver.user_id}
+
+
+@app.post("/v1/agent/canary")
+async def issue_canary(req: CanaryIssueRequest, user: UserIdentity = Depends(get_verified_user)):
+    """Mint a canary token bound to a session for the caller to embed wherever
+    sensitive context is loaded into the agent (a retrieved secret, a
+    confidential document, etc). evaluate_tool_call() checks every subsequent
+    tool call's arguments for this token reappearing and DENYs on a match --
+    see atlas.detectors.canary.CanaryTrapEngine and atlas.engine.evaluator's
+    "Canary Token Exfiltration Check"."""
+    token = evaluator.issue_canary(req.session_id, label=req.label)
+    return {"canary_token": token, "session_id": req.session_id}
 
 
 @app.post("/v1/agent/scrub")
