@@ -38,7 +38,7 @@ Anthropic's Model Context Protocol (MCP) is the standard JSON-RPC wire protocol 
 ### Atlas MCP Gateway Superpowers
 Atlas can act as an inline **MCP Security Reverse Proxy**:
 * Intercepts `tools/call` JSON-RPC messages before dispatching to the real MCP server.
-* Enforces OPA least-privilege rules on tool names and arguments.
+* Enforces least-privilege rules on tool names and arguments (Python PDP).
 * Validates server manifests and hashes tool schemas to prevent tool shadowing.
 
 ---

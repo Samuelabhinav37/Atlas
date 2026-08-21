@@ -18,10 +18,12 @@ Static compliance frameworks (NIST AI RMF, ISO 42001) define policies, while thr
 | :--- | :--- | :--- | :--- |
 | **AML.T0051 (Prompt Injection)** | **ASI01 (Agent Goal Hijack)** | Attacker inputs direct instruction overrides to subvert alignment. | Ingress Delimiter & Jailbreak Classifier (`PromptInjectionDetector`) |
 | **AML.T0054 (Context Poisoning)** | **ASI06 (Memory Poisoning)** | Attacker embeds instructions in a webpage/PDF read by the agent. | Inter-Tool Content Scrubber & Quarantine Envelope (`InterToolScrubber`) |
-| **AML.T0086 (Exfiltration via Tool)** | **ASI02 (Tool Misuse)** | Agent is coerced into issuing SSRF or exfiltrating data to external webhooks. | Rego Egress Policies & Cloud Metadata IP Blocklist (`policies/egress_guard.rego`) |
+| **AML.T0086 (Exfiltration via Tool)** | **ASI02 (Tool Misuse)** | Agent is coerced into issuing SSRF or exfiltrating data to external webhooks. | Egress Guard & Cloud Metadata IP Blocklist (`atlas.engine.evaluator`) |
 | **AML.T0086 (Unauthorized Execution)** | **ASI05 (Unexpected RCE)** | Agent attempts path traversal (`../../`) or destructive SQL (`DROP TABLE`). | AST-based Argument Parsers (`sqlglot`, `shlex`) & Least Agency Rules |
-| **AML.T0057 (Goal Hijacking)** | **ASI08 (Cascading Failures)** | Agent enters runaway infinite retry loop or excessive token spend. | Budget Circuit Breakers & Session Depth Caps (`policies/budget_guard.rego`) |
+| **AML.T0057 (Goal Hijacking)** | **ASI08 (Cascading Failures)** | Agent enters runaway infinite retry loop or excessive token spend. | Budget Circuit Breakers & Session Depth Caps (`atlas.engine.evaluator`) |
 | **AML.T0053 (ML Artifact Exfil)** | **ASI03 (Privilege Abuse)** | Agent attempts to leak confidential context or API tokens. | Synthetic Canary Token Traps & Secret Scrubber (`CanaryTrapEngine`) |
+
+All enforcement above runs as native Python in `atlas.engine.evaluator.PolicyEvaluator`. `policies/*.rego` is a reference implementation of the same rules in Rego/OPA syntax, kept for anyone who wants to run policy evaluation through OPA instead — it is not currently loaded or queried by the gateway.
 
 ---
 

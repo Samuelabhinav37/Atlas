@@ -13,7 +13,7 @@ Atlas is designed around a single core insight: **LLMs cannot be trusted to judg
 │  [ Foundation Model (Planner) ] ◄── [ Sanitized Context ]              │
 │               │                                                        │
 │               ▼                                                        │
-│  [ Tool Call Proposal ] ──────────► [ Deterministic PEP / OPA Engine ] │
+│  [ Tool Call Proposal ] ──────────► [ Deterministic PEP / Python Engine ]│
 │                                              │ (Allow / Block / HITL)  │
 │                                              ▼                         │
 │  [ Protected Environment ] ◄─────── [ Executed Tool Action ]           │
@@ -62,7 +62,7 @@ Atlas is designed around a single core insight: **LLMs cannot be trusted to judg
 * **The Vulnerability**: Security inspection adds noticeable latency (TTFT - Time to First Token) to streaming LLM chat completions.
 * **Atlas Mitigation**:
   1. **Dual-Path Streaming**: Stream non-tool text tokens directly to the client with zero latency (<1ms).
-  2. **Tool-Call Buffering**: Only pause and buffer when a `tool_calls` delta chunk is detected. OPA in-memory Rego evaluation completes in **under 2ms**.
+  2. **Tool-Call Buffering**: Only pause and buffer when a `tool_calls` delta chunk is detected. In-memory Python PDP evaluation completes in **under 2ms**.
 
 ---
 
@@ -71,7 +71,7 @@ Atlas is designed around a single core insight: **LLMs cannot be trusted to judg
 | Pipeline Stage | Target Latency | Actual Measured | Status |
 | :--- | :--- | :--- | :--- |
 | **Ingress Prompt Scan** | < 5ms | ~1.2ms | ✅ Within Budget |
-| **OPA / AST Tool Decision** | < 5ms | ~2.4ms | ✅ Within Budget |
+| **PDP / AST Tool Decision** | < 5ms | ~2.4ms | ✅ Within Budget |
 | **Inter-Tool Scrubber** | < 10ms | ~3.8ms | ✅ Within Budget |
 | **Hash-Chain Receipt Creation**| < 2ms | ~0.6ms | ✅ Within Budget |
 | **Total Added Gateway Latency**| **< 20ms** | **~8.0ms** | **⚡ Ultra Low Latency** |

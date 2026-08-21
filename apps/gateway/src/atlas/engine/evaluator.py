@@ -1,5 +1,7 @@
 """
-Policy Decision Point (PDP) evaluating Rego policies, AST argument inspectors, and autonomous rewriters.
+Policy Decision Point (PDP) evaluating tool-call arguments via native Python rules, AST argument
+inspectors, and autonomous rewriters. See policies/*.rego for a parallel Rego/OPA reference
+implementation of the same rules — it is not loaded or queried by this module.
 Includes Active Deception & Honeypot Trap validation.
 """
 

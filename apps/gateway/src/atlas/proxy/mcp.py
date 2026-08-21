@@ -1,6 +1,6 @@
 """
 Model Context Protocol (MCP) JSON-RPC Security Interceptor and Gateway.
-Enforces runtime OPA least-agency policies and inter-tool scrubbing on MCP tool calls.
+Enforces runtime least-agency policies (via the Python PDP) and inter-tool scrubbing on MCP tool calls.
 """
 
 import secrets

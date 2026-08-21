@@ -54,7 +54,7 @@ flowchart TB
         end
         
         subgraph PEP[" 2. Policy Enforcement Point (PEP) "]
-            OPA[OPA / Rego Policy Engine]
+            PDP[Python Policy Decision Point]
             SQLAST[SQL AST Inspector & Auto-Rewriter - SQLGlot]
             ShellAST[Shell AST Inspector - Bashlex]
             AuthZen[Delegated Scope Bounding]
@@ -92,7 +92,7 @@ flowchart TB
 
 ## Key Capabilities
 
-### 1. Action Authorization & Least Agency (OPA/Rego + AST Parsers)
+### 1. Action Authorization & Least Agency (Python Policy Engine + AST Parsers)
 Evaluates every tool invocation proposal before execution:
 $$\text{Decision} = f(\text{User Identity}, \text{Agent Role}, \text{Requested Tool}, \text{Parsed AST Arguments}, \text{Session Depth})$$
 - **SQL AST Inspection & Autonomous Rewriting (`sqlglot`)**: Blocks destructive verbs (`DROP`, `DELETE`, `TRUNCATE`), restricts sensitive tables (`credentials`, `salary_records`), and autonomously injects safety limits (`LIMIT 100`) and tenant isolation clauses (`WHERE tenant_id = '...'`).
