@@ -391,13 +391,20 @@ class PolicyEvaluator:
                     mapping=hp_table_res.taxonomy,
                 )
 
-            # Restrict analyst role to SELECT queries
-            if agent.role == "analyst" and ast_info["statement_type"] != "SELECT":
+            # Restrict every role except admin to read-only SQL. This must be an
+            # allowlist of the one role trusted with mutations, not a denylist of
+            # "analyst" -- a denylist means any other role, including a typo'd or
+            # unrecognized one, silently got unrestricted DROP/DELETE/UPDATE/INSERT
+            # gated only by the small hardcoded forbidden_tables blocklist below.
+            if agent.role != "admin" and ast_info["statement_type"] != "SELECT":
                 mapping = taxonomy_mapper.enrich(
                     atlas_id="AML.T0086",
                     owasp_id="ASI02",
                     nist_id="MANAGE-2.4",
-                    reason=f"Analyst agent role cannot execute mutating SQL statements ({ast_info['statement_type']})",
+                    reason=(
+                        f"Agent role '{agent.role}' cannot execute mutating SQL statements "
+                        f"({ast_info['statement_type']}); only 'admin' may"
+                    ),
                 )
                 return PolicyDecision(
                     outcome=DecisionOutcome.DENY,
@@ -437,6 +444,26 @@ class PolicyEvaluator:
                 query=deob_query,
                 tenant_id=tenant_filter,
             )
+
+            # rewrite_and_harden re-parses with an explicit postgres dialect, which can
+            # reject a query that the earlier generic-dialect parse accepted. When that
+            # happens rewritten_sql falls back to the *unmodified* original query -- no
+            # LIMIT injected, no tenant isolation applied -- so this must DENY rather
+            # than ALLOW with a query that was never actually hardened.
+            if not rewrite_res.is_safe:
+                mapping = taxonomy_mapper.enrich(
+                    atlas_id="AML.T0086",
+                    owasp_id="ASI02",
+                    nist_id="MANAGE-2.4",
+                    reason="SQL query could not be safely rewritten with guardrails (dialect-specific parse failure)",
+                )
+                return PolicyDecision(
+                    outcome=DecisionOutcome.DENY,
+                    allowed=False,
+                    policy_name="atlas.sql.rewrite_failed",
+                    reasons=[mapping.reason],
+                    mapping=mapping,
+                )
 
             return PolicyDecision(
                 outcome=DecisionOutcome.ALLOW,

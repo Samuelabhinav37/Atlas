@@ -11,6 +11,45 @@ from atlas.models import (
 )
 
 
+def test_sql_denied_when_rewriter_reports_unsafe(monkeypatch):
+    """Regression: rewrite_and_harden() re-parses with an explicit postgres dialect,
+    which can fail even when the earlier generic-dialect parse succeeded -- when that
+    happens rewritten_sql silently falls back to the *unmodified* original query (no
+    LIMIT, no tenant isolation), but the evaluator used to return ALLOW anyway without
+    ever checking is_safe. Force that condition deterministically via monkeypatch
+    rather than hunting for a fragile real dialect-divergent query string."""
+    from atlas.engine.sql_rewriter import SQLRewriteResult
+
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="alice", scopes=["sql_query:execute"])
+    agent = AgentIdentity(agent_id="analyst_1", role="analyst")
+    session = SessionState(session_id="s1")
+
+    def fake_rewrite(self, query, dialect="postgres", tenant_id=None):
+        return SQLRewriteResult(
+            original_sql=query,
+            rewritten_sql=query,
+            transformations_applied=["unparseable_syntax"],
+            is_safe=False,
+            dialect=dialect,
+        )
+
+    monkeypatch.setattr(
+        "atlas.engine.sql_rewriter.SQLSecurityRewriter.rewrite_and_harden", fake_rewrite
+    )
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={"query": "SELECT id FROM employees;"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+
+
 def test_allowed_select_query():
     evaluator = PolicyEvaluator()
     user = UserIdentity(user_id="alice", scopes=["sql_query:execute"])
@@ -47,6 +86,68 @@ def test_blocked_drop_table():
     assert decision.outcome == DecisionOutcome.DENY
     assert decision.mapping.atlas_technique == "AML.T0086"
     assert decision.mapping.owasp_category == "ASI02"
+
+
+def test_blocked_drop_table_by_non_analyst_non_admin_role():
+    """Regression: only 'analyst' used to be restricted to SELECT-only SQL, so any
+    other role -- including an operator, or a typo'd/unrecognized role -- got
+    unrestricted DROP/DELETE/UPDATE/INSERT gated only by the small hardcoded
+    forbidden_tables blocklist. Every role except 'admin' must be read-only."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="op_bob", scopes=["sql_query:execute"])
+    agent = AgentIdentity(agent_id="operator_1", role="operator")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={"query": "DROP TABLE orders;"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+
+
+def test_blocked_drop_table_by_unrecognized_role():
+    """A made-up/unrecognized role string must default to read-only, not
+    unrestricted -- fail closed, not fail open, for an unknown role."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="mystery", scopes=["sql_query:execute"])
+    agent = AgentIdentity(agent_id="agent_1", role="totally_made_up_role")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={"query": "DROP TABLE orders;"},
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+
+
+def test_allowed_drop_table_by_admin_role():
+    """admin remains the one role trusted with mutating SQL (matching
+    tool_authz.rego's is_valid_role_invocation, where admin is unrestricted)."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="root", scopes=["sql_query:execute"])
+    agent = AgentIdentity(agent_id="admin_1", role="admin")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={"query": "DROP TABLE orders;"},
+        session=session,
+    )
+
+    assert decision.allowed is True
+    assert decision.outcome == DecisionOutcome.ALLOW
 
 
 def test_blocked_restricted_table():
