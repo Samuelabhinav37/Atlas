@@ -46,7 +46,7 @@ Atlas is designed around a single core insight: **LLMs cannot be trusted to judg
 * **The Vulnerability**: An agent connected to a PostgreSQL or Slack MCP server holds broad ambient credentials. A malicious email read by the agent instructs it to use the Slack tool to message the attacker the API keys.
 * **Atlas Mitigation**:
   1. **User Token Exchange & Scope Bounding**: The agent does not run with ambient root keys; its permissions are dynamically constrained by the user's JWT scopes (`sql_query:execute`, `slack:read_only`).
-  2. **Synthetic Canary Traps**: Inject unique `ATLAS-CANARY-*` tokens in sensitive context. If any tool call contains the canary token, the call is blocked as an active exfiltration attempt (*AML.T0053*).
+  2. **Synthetic Canary Traps (built, not yet wired in)**: `atlas.detectors.canary.CanaryTrapEngine` can inject unique `ATLAS-CANARY-*` tokens into sensitive context and detect them reappearing in outbound content, but nothing in the live request path currently calls `generate_canary()`/`check_leak()` -- it is not an active mitigation today.
 
 ---
 

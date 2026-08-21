@@ -22,7 +22,9 @@ techniques:
     name: "Exfiltration via ML Artifacts"
     tactic: "Exfiltration"
     description: "Adversary leverages agent capabilities to encode and exfiltrate sensitive data outside system boundaries."
-    mitigation: "Egress Filtering & Canary Traps"
+    mitigation: "Egress Filtering. Canary Traps (atlas.detectors.canary.CanaryTrapEngine)
+      are implemented but not currently called anywhere in the live request
+      path -- not an active mitigation today."
 
   AML.T0086:
     id: "AML.T0086"
