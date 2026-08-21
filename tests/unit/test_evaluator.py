@@ -178,6 +178,50 @@ def test_admin_bare_delete_gets_tenant_isolation_injected():
     assert "WHERE" in rewritten
 
 
+def test_admin_insert_with_spoofed_tenant_id_is_denied():
+    """Regression: SQLSecurityRewriter never touched INSERT statements at all,
+    so a tenant-scoped admin could write rows explicitly claiming a different
+    tenant_id -- e.g. INSERT INTO orders (tenant_id, item) VALUES
+    ('other_tenant', 'stolen_widget') -- and it sailed through as ALLOW with
+    the spoofed value untouched."""
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="root", scopes=["sql_query:execute"], tenant_id="tenant_42")
+    agent = AgentIdentity(agent_id="admin_1", role="admin")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={
+            "query": "INSERT INTO orders (tenant_id, item) VALUES ('other_tenant', 'stolen_widget');"
+        },
+        session=session,
+    )
+
+    assert decision.allowed is False
+    assert decision.outcome == DecisionOutcome.DENY
+    assert "other_tenant" in decision.reasons[0]
+
+
+def test_admin_insert_missing_tenant_id_gets_it_injected():
+    evaluator = PolicyEvaluator()
+    user = UserIdentity(user_id="root", scopes=["sql_query:execute"], tenant_id="tenant_42")
+    agent = AgentIdentity(agent_id="admin_1", role="admin")
+    session = SessionState(session_id="s1")
+
+    decision = evaluator.evaluate_tool_call(
+        user=user,
+        agent=agent,
+        tool="sql_query",
+        args={"query": "INSERT INTO orders (item) VALUES ('widget');"},
+        session=session,
+    )
+
+    assert decision.allowed is True
+    assert "tenant_42" in decision.modified_args["query"]
+
+
 def test_blocked_restricted_table():
     evaluator = PolicyEvaluator()
     user = UserIdentity(user_id="alice", scopes=["sql_query:execute"])

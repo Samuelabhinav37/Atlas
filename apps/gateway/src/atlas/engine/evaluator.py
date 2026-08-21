@@ -445,17 +445,18 @@ class PolicyEvaluator:
                 tenant_id=tenant_filter,
             )
 
-            # rewrite_and_harden re-parses with an explicit postgres dialect, which can
-            # reject a query that the earlier generic-dialect parse accepted. When that
-            # happens rewritten_sql falls back to the *unmodified* original query -- no
-            # LIMIT injected, no tenant isolation applied -- so this must DENY rather
-            # than ALLOW with a query that was never actually hardened.
+            # rewrite_and_harden can refuse to harden a query for more than one
+            # reason -- a dialect-specific parse failure, or (for INSERT) an
+            # explicit tenant_id value that doesn't match the caller's own
+            # tenant -- so this must DENY with the specific reason it gave
+            # rather than ALLOW with a query that was never actually hardened.
             if not rewrite_res.is_safe:
                 mapping = taxonomy_mapper.enrich(
                     atlas_id="AML.T0086",
                     owasp_id="ASI02",
                     nist_id="MANAGE-2.4",
-                    reason="SQL query could not be safely rewritten with guardrails (dialect-specific parse failure)",
+                    reason=rewrite_res.blocked_reason
+                    or "SQL query could not be safely rewritten with guardrails",
                 )
                 return PolicyDecision(
                     outcome=DecisionOutcome.DENY,

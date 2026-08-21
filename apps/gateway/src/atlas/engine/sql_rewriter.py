@@ -16,6 +16,7 @@ class SQLRewriteResult:
     transformations_applied: list[str]
     is_safe: bool
     dialect: str
+    blocked_reason: str | None = None
 
 
 class SQLSecurityRewriter:
@@ -23,6 +24,49 @@ class SQLSecurityRewriter:
 
     def __init__(self, default_limit: int = 100):
         self.default_limit = default_limit
+
+    def _harden_insert(
+        self, parsed: exp.Insert, tenant_id: str
+    ) -> tuple[list[str], str | None]:
+        """Validate/inject the tenant_id column on INSERTs whose column list and
+        VALUES tuples we can actually introspect (mutates `parsed` in place).
+
+        Positional INSERTs (no explicit column list) and INSERT...SELECT are
+        left untouched -- without real table-schema knowledge there is no
+        reliable way to locate or verify a tenant_id value in either shape, and
+        silently "fixing" them would be a false sense of security. This is a
+        documented gap, not an oversight: see README's SQL AST Inspection bullet.
+        """
+        transformations: list[str] = []
+
+        schema = parsed.this
+        values = parsed.expression
+        if not isinstance(schema, exp.Schema) or not isinstance(values, exp.Values):
+            return transformations, None
+
+        col_names = [ident.name.lower() for ident in schema.expressions]
+
+        if "tenant_id" in col_names:
+            idx = col_names.index("tenant_id")
+            for tup in values.expressions:
+                val = tup.expressions[idx] if idx < len(tup.expressions) else None
+                if isinstance(val, exp.Literal) and str(val.this) == tenant_id:
+                    continue
+                provided = val.sql() if val is not None else "<missing>"
+                return transformations, (
+                    f"INSERT specifies tenant_id {provided} which does not match "
+                    f"caller's own tenant '{tenant_id}'"
+                )
+            return transformations, None
+
+        # tenant_id column not present at all -- inject it into both the column
+        # list and every VALUES tuple, same "inject when missing" pattern used
+        # for the WHERE-clause tenant filter on SELECT/UPDATE/DELETE.
+        schema.expressions.append(exp.to_identifier("tenant_id"))
+        for tup in values.expressions:
+            tup.expressions.append(exp.Literal.string(tenant_id))
+        transformations.append(f"injected_tenant_isolation('{tenant_id}')")
+        return transformations, None
 
     def rewrite_and_harden(
         self,
@@ -51,6 +95,8 @@ class SQLSecurityRewriter:
                 transformations_applied=["unparseable_syntax"],
                 is_safe=False,
                 dialect=dialect,
+                blocked_reason="SQL query could not be safely rewritten with guardrails "
+                "(dialect-specific parse failure)",
             )
 
         # 1. Enforce LIMIT on SELECT queries
@@ -85,6 +131,21 @@ class SQLSecurityRewriter:
             else:
                 parsed = parsed.where(tenant_condition, copy=False)
             transformations.append(f"injected_tenant_isolation('{tenant_id}')")
+
+        # 3. Validate/inject tenant_id on INSERTs we can introspect (explicit
+        # column list + VALUES). See _harden_insert for what's out of scope.
+        if tenant_id and isinstance(parsed, exp.Insert):
+            insert_transforms, blocked_reason = self._harden_insert(parsed, tenant_id)
+            if blocked_reason:
+                return SQLRewriteResult(
+                    original_sql=query,
+                    rewritten_sql=query,
+                    transformations_applied=[],
+                    is_safe=False,
+                    dialect=dialect,
+                    blocked_reason=blocked_reason,
+                )
+            transformations.extend(insert_transforms)
 
         rewritten_sql = parsed.sql(dialect=dialect)
 
