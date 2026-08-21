@@ -82,8 +82,18 @@ class AtlasGuard:
         if not decision.allowed:
             raise SecurityViolationError(decision)
 
-        # Return rewritten/hardened arguments if available
-        return decision.modified_args if decision.modified_args else arguments
+        # Merge in rewritten/hardened arguments if available. modified_args
+        # only ever contains the specific keys a policy rewrote (e.g. just
+        # "query" for the SQL auto-harden path) -- returning it verbatim as
+        # the full kwargs, instead of merging it over the original
+        # arguments, silently dropped every other parameter the caller
+        # passed. For a tool with more than one parameter this meant either
+        # a TypeError (no default) or a silent revert to that parameter's
+        # default value (e.g. a caller-supplied readonly=False or tenant_id
+        # reverting to its default) on every successful auto-hardened call.
+        if decision.modified_args:
+            return {**arguments, **decision.modified_args}
+        return arguments
 
     def sanitize_tool_return(self, tool_name: str, raw_output: Any) -> Any:
         """Sanitize tool return values before ingesting into LLM context."""

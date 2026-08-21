@@ -55,6 +55,28 @@ def test_sdk_wrap_tool_decorator():
         execute_sql(query="DROP TABLE accounts;")
 
 
+def test_sdk_wrap_tool_preserves_unrewritten_args():
+    """Regression: protect_call() returned decision.modified_args verbatim as
+    the full kwargs instead of merging it over the original arguments.
+    modified_args only ever contains the specific key(s) a policy rewrote
+    (just "query" for the SQL auto-harden path), so any tool with more than
+    one parameter either crashed with a TypeError (no default) or silently
+    reverted a caller-supplied value to that parameter's default on every
+    successful auto-hardened call -- e.g. an explicit readonly=False
+    silently reverting to the default readonly=True."""
+    guard = AtlasGuard(default_scopes=["sql_query:execute"])
+
+    @guard.wrap_tool
+    def sql_query(query: str, database: str, readonly: bool = True):
+        return {"query": query, "database": database, "readonly": readonly}
+
+    result = sql_query(query="SELECT * FROM orders", database="prod_replica", readonly=False)
+
+    assert "LIMIT" in result["query"]
+    assert result["database"] == "prod_replica"
+    assert result["readonly"] is False
+
+
 def test_sdk_inspect_ingress_prompt():
     guard = AtlasGuard()
     # Benign prompt
