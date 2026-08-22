@@ -3,6 +3,7 @@ Unit tests for the tamper-evident cryptographic audit ledger.
 """
 
 import json
+import threading
 from pathlib import Path
 
 from atlas.audit.ledger import AuditLedger
@@ -160,3 +161,38 @@ def test_signed_checkpoint_rejects_forged_checkpoint(tmp_path: Path, monkeypatch
     valid, _, msg = ledger.verify_ledger()
     assert valid is False
     assert "signature" in msg.lower()
+
+
+def test_concurrent_writers_do_not_fork_the_hash_chain(tmp_path: Path):
+    """Regression: record_decision() used to read-modify-write self._last_hash/
+    self._count with no lock. Concurrent callers (e.g. multiple worker threads
+    handling simultaneous requests) could both read the same prev_hash and write
+    receipts that both claim it, forking the chain. A threading.Lock around the
+    critical section serializes them instead."""
+    log_file = tmp_path / "test_audit_concurrent.jsonl"
+    ledger = AuditLedger(log_file=log_file)
+
+    n_threads = 20
+
+    def _record(i: int) -> None:
+        ledger.record_decision(
+            trace_id=f"tr_{i}",
+            user_id="user_1",
+            tenant_id="tenant_a",
+            agent_id="agent_1",
+            agent_role="analyst",
+            tool_name="sql_query",
+            arguments={"query": f"SELECT {i}"},
+            decision=DecisionOutcome.ALLOW,
+            policy_name="atlas.authz.allow",
+        )
+
+    threads = [threading.Thread(target=_record, args=(i,)) for i in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    valid, count, msg = ledger.verify_ledger()
+    assert valid is True, msg
+    assert count == n_threads

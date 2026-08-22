@@ -458,24 +458,22 @@ async def get_taxonomy():
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def serve_dashboard():
+async def serve_dashboard(user: UserIdentity = Depends(get_verified_user)):
     """Serve the Atlas Real-Time Visual Observability Dashboard.
 
-    The dashboard is a same-origin operator console, so the server mints itself a
-    short-lived demo token here (scoped to the simulator's own tool calls plus
-    step_up:approve) and embeds it in the page for its own fetch() calls to use --
-    it is not a route any other caller can use to obtain privileges.
+    Requires the same verified bearer token as every other endpoint. The token
+    embedded here for the page's own fetch() calls is re-minted from the already
+    -authenticated caller's own identity and scopes -- it can never carry more
+    privilege (e.g. step_up:approve) than the caller already held. Previously this
+    route had no auth dependency and minted a static, blanket-privileged token for
+    anyone who hit it, unauthenticated -- letting any caller scrape a working
+    step_up:approve + execute_* credential straight out of the HTML response.
     """
     dashboard_token = issue_user_token(
-        user_id="dashboard_operator",
-        scopes=[
-            "sql_query:execute",
-            "read_file:execute",
-            "fetch_url:execute",
-            "execute_command:execute",
-            "execute_payment:execute",
-            "step_up:approve",
-        ],
+        user_id=user.user_id,
+        scopes=user.scopes,
+        tenant_id=user.tenant_id,
+        roles=user.roles,
         ttl_seconds=3600,
     )
     html = """

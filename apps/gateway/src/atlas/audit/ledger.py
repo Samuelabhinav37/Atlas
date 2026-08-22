@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import secrets
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,10 @@ class AuditLedger:
         self.genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
         self._hmac_key = os.environ.get("ATLAS_AUDIT_HMAC_SECRET")
         self._last_hash, self._count = self._get_latest_state()
+        # record_decision() does blocking file I/O with no `await` inside it, so a single
+        # event loop can't interleave two calls mid-write -- but concurrent worker *threads*
+        # calling it can race the read-modify-write of _last_hash/_count and fork the chain.
+        self._lock = threading.Lock()
 
     def _get_latest_state(self) -> tuple[str, int]:
         """Read the last hash and total receipt count from disk."""
@@ -109,33 +114,34 @@ class AuditLedger:
             "taxonomy": taxonomy.model_dump() if taxonomy else None,
         }
 
-        prev_hash = self._last_hash
-        current_hash = self._compute_hash(prev_hash, payload_for_hashing)
+        with self._lock:
+            prev_hash = self._last_hash
+            current_hash = self._compute_hash(prev_hash, payload_for_hashing)
 
-        receipt = AuditReceipt(
-            receipt_id=receipt_id,
-            trace_id=trace_id,
-            user_id=user_id,
-            tenant_id=tenant_id,
-            agent_id=agent_id,
-            agent_role=agent_role,
-            tool_name=tool_name,
-            arguments=arguments,
-            decision=decision,
-            policy_name=policy_name,
-            violation_reasons=violation_reasons,
-            taxonomy=taxonomy,
-            prev_hash=prev_hash,
-            current_hash=current_hash,
-        )
+            receipt = AuditReceipt(
+                receipt_id=receipt_id,
+                trace_id=trace_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                agent_role=agent_role,
+                tool_name=tool_name,
+                arguments=arguments,
+                decision=decision,
+                policy_name=policy_name,
+                violation_reasons=violation_reasons,
+                taxonomy=taxonomy,
+                prev_hash=prev_hash,
+                current_hash=current_hash,
+            )
 
-        # Write to JSONL
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(receipt.model_dump_json() + "\n")
+            # Write to JSONL
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(receipt.model_dump_json() + "\n")
 
-        self._last_hash = current_hash
-        self._count += 1
-        self._write_checkpoint()
+            self._last_hash = current_hash
+            self._count += 1
+            self._write_checkpoint()
         return receipt
 
     def _verify_checkpoint(self, final_hash: str, count: int) -> str | None:

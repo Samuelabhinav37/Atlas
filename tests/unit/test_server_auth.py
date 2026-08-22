@@ -10,7 +10,7 @@ import os
 
 os.environ.setdefault("ATLAS_JWT_SECRET", "test-secret-for-unit-tests-only-32bytes-min")
 
-from atlas.auth.tokens import issue_user_token  # noqa: E402
+from atlas.auth.tokens import issue_user_token, verify_user_token  # noqa: E402
 from atlas.proxy.server import app  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -241,11 +241,45 @@ def test_delegation_token_allows_when_bearer_and_delegation_both_grant_scope():
     assert resp.json()["allowed"] is True
 
 
-def test_dashboard_embeds_a_real_token_not_the_placeholder():
+def test_dashboard_rejects_missing_token():
+    """Regression: /dashboard had no auth dependency at all and minted a static
+    dashboard_operator token scoped to execute_command:execute, execute_payment:
+    execute, and step_up:approve for anyone who hit the route -- any caller, not
+    just a browser visitor, could scrape that token out of the HTML and reuse it
+    directly against every other endpoint, including approving/rejecting any
+    pending step-up challenge cross-tenant. Live-verified against a running
+    gateway before this fix."""
     resp = client.get("/dashboard")
+    assert resp.status_code in (401, 403)
+
+
+def test_dashboard_embeds_a_real_token_not_the_placeholder():
+    token = issue_user_token(user_id="operator_1", scopes=["sql_query:execute"])
+    resp = client.get("/dashboard", headers=_auth(token))
     assert resp.status_code == 200
     assert "__ATLAS_DASHBOARD_TOKEN__" not in resp.text
     assert "ATLAS_DASHBOARD_TOKEN" in resp.text
+
+
+def test_dashboard_token_cannot_carry_more_privilege_than_the_caller_had():
+    """Regression for the same bug as test_dashboard_rejects_missing_token: even
+    with a valid token, the dashboard must re-mint using the caller's own
+    identity/scopes, not a hardcoded superset -- otherwise any authenticated-but-
+    unprivileged caller could still walk away with step_up:approve."""
+    token = issue_user_token(user_id="low_priv_operator", scopes=["read_file:execute"])
+    resp = client.get("/dashboard", headers=_auth(token))
+    assert resp.status_code == 200
+
+    marker = 'const ATLAS_DASHBOARD_TOKEN = "'
+    start = resp.text.index(marker) + len(marker)
+    end = resp.text.index('"', start)
+    embedded_token = resp.text[start:end]
+
+    embedded_identity = verify_user_token(embedded_token)
+    assert embedded_identity.user_id == "low_priv_operator"
+    assert embedded_identity.scopes == ["read_file:execute"]
+    assert "step_up:approve" not in embedded_identity.scopes
+    assert "execute_payment:execute" not in embedded_identity.scopes
 
 
 def test_audit_receipts_rejects_missing_token():
